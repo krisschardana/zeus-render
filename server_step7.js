@@ -1,5 +1,8 @@
 // server_step7.js
-// ZEUS server: chat + vocali + WebRTC audio/video + EMAIL OTP
+// ZEUS server: chat + vocali + WebRTC audio/video + EMAIL OTP (con modalità TEST)
+
+// ATTENZIONE: per usare la modalità test OTP su Render
+// imposta la variabile di ambiente TEST_MODE = true nel pannello Render.
 
 const express = require("express");
 const http = require("http");
@@ -15,6 +18,9 @@ const io = new Server(server);
 
 // porta (locale 8080 oppure porta fornita da Render)
 const PORT = process.env.PORT || 8080;
+
+// modalità test OTP (niente invio SMTP reale)
+const TEST_MODE = process.env.TEST_MODE === "true";
 
 // utenti in “database” in memoria
 // struttura: [{ name, email }]
@@ -34,15 +40,22 @@ app.use(express.static(path.join(__dirname, "public")));
 // ---- CONFIGURAZIONE EMAIL (Nodemailer + Infomaniak) ----
 // Mittente: gnosis@ik.me (Infomaniak, SMTP autenticato)
 // Server SMTP Infomaniak: mail.infomaniak.com, porta 587, STARTTLS
-const transporter = nodemailer.createTransport({
-  host: "mail.infomaniak.com",
-  port: 587,
-  secure: false, // STARTTLS su 587
-  auth: {
-    user: "gnosis@ik.me",
-    pass: "Sugunnu1000", // <-- QUI DEVI METTERE LA PASSWORD ESATTA DELLA CASELLA
-  },
-});
+let transporter = null;
+
+if (!TEST_MODE) {
+  transporter = nodemailer.createTransport({
+    host: "mail.infomaniak.com",
+    port: 587,
+    secure: false, // STARTTLS su 587
+    auth: {
+      user: "gnosis@ik.me",
+      pass: "Sugunnu1000", // <-- QUI DEVI METTERE LA PASSWORD ESATTA DELLA CASELLA
+    },
+  });
+  console.log("Modalità EMAIL reale attiva (TEST_MODE = false).");
+} else {
+  console.log("ATTENZIONE: TEST_MODE = true, OTP NON inviato via email, solo log.");
+}
 
 // funzione per creare OTP 6 cifre sicuro
 function generateOtp() {
@@ -51,7 +64,9 @@ function generateOtp() {
 
 // ---- API REST EMAIL + OTP ----
 
-// 1) Richiesta login: genera OTP e manda email a TE
+// 1) Richiesta login: genera OTP
+//    - in modalità normale: manda email a TE
+//    - in TEST_MODE: NON manda email, logga il codice in console
 app.post("/api/login-request", async (req, res) => {
   const { name, email } = req.body || {};
 
@@ -65,7 +80,18 @@ app.post("/api/login-request", async (req, res) => {
 
   pendingOtps[email] = { code, expiresAt, name };
 
-  // prepara email: viene inviata a TE (admin)
+  // se siamo in modalità TEST, non usiamo SMTP
+  if (TEST_MODE) {
+    console.log("=== OTP TEST MODE ===");
+    console.log(`OTP per ${name} <${email}> = ${code}`);
+    console.log("Questo codice NON è stato inviato via email (TEST_MODE).");
+    return res.json({
+      ok: true,
+      message: "OTP generato in modalità test. Controlla i log del server.",
+    });
+  }
+
+  // modalità normale: prepara email inviata a TE (admin)
   const mailOptions = {
     from: "ZEUS APP <gnosis@ik.me>",
     to: "gnosis@ik.me", // puoi cambiarlo se vuoi altri destinatari
@@ -343,4 +369,7 @@ io.on("connection", (socket) => {
 // avvio server
 server.listen(PORT, () => {
   console.log(`ZEUS server attivo su http://localhost:${PORT}`);
+  if (TEST_MODE) {
+    console.log("ZEUS in modalità TEST OTP (email non inviate).");
+  }
 });
