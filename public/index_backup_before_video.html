@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ZEUS Chat</title>
+    <style>
+      body { font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; display:flex; height:100vh; }
+      #login, #app { width:100%; display:none; }
+      header { padding:10px 16px; background:#020617; font-weight:bold; }
+      #layout { display:flex; height:calc(100vh - 42px); }
+      #contacts { width:260px; border-right:1px solid #1e293b; padding:10px; box-sizing:border-box; overflow-y:auto; }
+      #contacts h2 { font-size:14px; margin-top:0; }
+      .contact { padding:6px 4px; border-radius:4px; cursor:pointer; }
+      .contact:hover { background:#1e293b; }
+      #chat-area { flex:1; display:flex; flex-direction:column; }
+      #chat-header { padding:8px 16px; background:#020617; font-size:14px; border-bottom:1px solid #1e293b; display:flex; align-items:center; }
+      #chat-title-text { flex:1; }
+      #chat { flex:1; overflow-y:auto; padding:10px 16px; box-sizing:border-box; }
+      .msg { margin-bottom:6px; }
+      .from-me { color:#22c55e; }
+      .from-other { color:#38bdf8; }
+      #composer { display:flex; padding:10px 16px; gap:8px; background:#020617; box-sizing:border-box; }
+      #input-bar { display:flex; gap:8px; width:100%; }
+      #composer input[type="text"] { flex:1; padding:8px; border-radius:4px; border:none; outline:none; }
+      #composer button { padding:8px 12px; border:none; border-radius:4px; background:#2563eb; color:white; cursor:pointer; }
+      #composer button:hover { background:#1d4ed8; }
+      /* login */
+      #login { display:flex; align-items:center; justify-content:center; }
+      #login-box { background:#020617; padding:20px; border-radius:8px; width:320px; box-shadow:0 0 20px rgba(15,23,42,0.9); }
+      #login-box h1 { margin-top:0; font-size:18px; }
+      #login-box label { font-size:14px; display:block; margin-top:10px; }
+      #login-box input { width:100%; padding:8px; margin-top:4px; border-radius:4px; border:none; outline:none; }
+      #login-box button { margin-top:16px; width:100%; padding:8px; border:none; border-radius:4px; background:#22c55e; color:white; cursor:pointer; }
+      #login-box button:hover { background:#16a34a; }
+      #error { color:#f97316; margin-top:8px; font-size:12px; }
+    </style>
+  </head>
+  <body>
+    <div id="login">
+      <div id="login-box">
+        <h1>ZEUS   Entra</h1>
+        <label for="name">Nome</label>
+        <input id="name" type="text" placeholder="Il tuo nome" />
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="la-tua@email" />
+        <button id="login-btn">Entra</button>
+        <div id="error"></div>
+      </div>
+    </div>
+
+    <div id="app">
+      <header>ZEUS   Chat</header>
+      <div id="layout">
+        <div id="contacts">
+          <h2>Contatti</h2>
+          <div id="contacts-list"></div>
+        </div>
+        <div id="chat-area">
+          <div id="chat-header">
+            <span id="chat-title-text">Seleziona un contatto per iniziare una chat privata</span>
+            <button id="audio-call-btn" style="margin-left:12px; padding:4px 8px; font-size:12px;">🔊 Chiama</button>
+            <button id="video-call-btn" style="margin-left:6px; padding:4px 8px; font-size:12px;">📹 Video</button>
+          </div>
+          <div id="chat"></div>
+          <div id="composer">
+            <div id="input-bar">
+              <input id="input" type="text" placeholder="Scrivi un messaggio..." autocomplete="off" />
+              <button id="send">Invia</button>
+              <!-- Il bottone 🎤 per i messaggi vocali viene aggiunto via app.js qui dentro -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

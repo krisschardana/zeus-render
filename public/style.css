@@ -1,0 +1,233 @@
+/* Reset base e layout fluido */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background-color: #0f172a;
+  color: #eee;
+}
+
+/* Vista login */
+#login {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+#login form {
+  width: 100%;
+  max-width: 320px;
+  background: #1f1f1f;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
+}
+
+#login input {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 12px;
+  border-radius: 4px;
+  border: 1px solid #333;
+  background-color: #0b0b0b;
+  color: #eee;
+}
+
+#login button {
+  width: 100%;
+  padding: 10px;
+  background: #229ED9;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+#login button:hover {
+  background: #1b8ac4;
+}
+
+#error {
+  color: #ff5555;
+  margin-top: 8px;
+}
+
+/* Vista app */
+#app {
+  display: none;
+  height: 100vh;
+}
+
+/* Contenitore principale app */
+.app-container {
+  display: flex;
+  height: 100%;
+  max-height: 100vh;
+}
+
+/* Colonna contatti */
+#contacts-list {
+  width: 280px;
+  min-width: 220px;
+  max-width: 320px;
+  background: #020617;
+  border-right: 1px solid #1f2937;
+  overflow-y: auto;
+}
+
+.contact {
+  padding: 10px 12px;
+  margin: 6px;
+  cursor: pointer;
+  border-radius: 8px;
+  background-color: #020617;
+  border: 1px solid #1e293b;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.contact:hover {
+  background-color: #111827;
+  border-color: #334155;
+}
+
+/* Contatto selezionato */
+.contact.selected {
+  background-color: #111827;
+  color: #fff;
+  border-left: 4px solid #229ED9;
+}
+
+/* Area chat */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #020617 0%, #020617 40%, #020617 100%);
+}
+
+/* Header chat (se lo aggiungi in HTML) */
+.chat-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid #333;
+  background: #020617;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Area messaggi */
+#chat {
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+  background: radial-gradient(circle at top left, #1f2937 0, #020617 55%);
+}
+
+/* Messaggi */
+.msg {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 16px;
+  max-width: 70%;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+/* Miei messaggi (a destra, blu) */
+.msg.from-me {
+  margin-left: auto;
+  background: #229ED9;
+  color: #fff;
+}
+
+/* Messaggi degli altri (a sinistra, grigio) */
+.msg.from-other {
+  margin-right: auto;
+  background: #1f2937;
+  color: #e5e7eb;
+}
+
+/* Input messaggio */
+.input-area {
+  display: flex;
+  border-top: 1px solid #1f2937;
+  padding: 6px;
+  background: #020617;
+  gap: 6px;
+}
+
+#input {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 999px;
+  outline: none;
+}
+
+#send {
+  padding: 0 18px;
+  background: #229ED9;
+  border: none;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#send:hover {
+  background: #1b8ac4;
+}
+
+/* --------------------------
+   RESPONSIVE
+   -------------------------- */
+
+/* Tablet / mobile */
+@media (max-width: 900px) {
+  .app-container {
+    flex-direction: column;
+  }
+
+  #contacts-list {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid #1f2937;
+  }
+
+  .chat-area {
+    height: 60vh;
+  }
+}
+
+/* Mobile piccolo */
+@media (max-width: 600px) {
+  #contacts-list {
+    height: 35vh;
+  }
+
+  .chat-area {
+    height: 65vh;
+  }
+
+  #login form {
+    padding: 16px;
+  }
+
+  .msg {
+    max-width: 85%;
+  }
+}
