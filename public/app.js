@@ -50,6 +50,26 @@ videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
 
+// ---- NUOVO: pannello log tecnico separato ----
+let callLogDiv = document.getElementById("call-log");
+if (!callLogDiv) {
+  callLogDiv = document.createElement("div");
+  callLogDiv.id = "call-log";
+  callLogDiv.style.fontSize = "11px";
+  callLogDiv.style.color = "#9ca3af";
+  callLogDiv.style.maxHeight = "80px";
+  callLogDiv.style.overflowY = "auto";
+  callLogDiv.style.padding = "4px 8px 0 8px";
+  callLogDiv.style.borderTop = "1px solid rgba(15,23,42,0.6)";
+  callLogDiv.style.boxSizing = "border-box";
+
+  // lo mettiamo subito sopra il composer, sotto l'area chat
+  const composer = document.getElementById("composer");
+  if (composer && chatDiv && chatDiv.parentNode) {
+    chatDiv.parentNode.insertBefore(callLogDiv, composer);
+  }
+}
+
 // ---- GRAFICA BOTTONI (solo icone, niente testo che cambia) ----
 if (audioCallBtn) {
   audioCallBtn.textContent = "";
@@ -176,8 +196,19 @@ async function loadUsers() {
         ? "#22c55e"
         : "#6b7280";
 
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = u.name;
+      nameSpan.style.fontWeight = "500";
+      nameSpan.style.marginRight = "4px";
+
+      const emailSpan = document.createElement("span");
+      emailSpan.textContent = `(${u.email})`;
+      emailSpan.style.fontSize = "11px";
+      emailSpan.style.color = "#9ca3af";
+
       const textSpan = document.createElement("span");
-      textSpan.textContent = `${u.name} (${u.email})`;
+      textSpan.appendChild(nameSpan);
+      textSpan.appendChild(emailSpan);
 
       div.appendChild(statusDot);
       div.appendChild(textSpan);
@@ -189,6 +220,9 @@ async function loadUsers() {
         });
         div.classList.add("selected");
         updateChatHeader();
+
+        // quando scelgo un contatto, pulisco un po' il log tecnico
+        clearCallLogIfTooLong();
       });
 
       contactsList.appendChild(div);
@@ -254,12 +288,9 @@ sendBtn.addEventListener("click", () => {
     socket.emit("chat-message", text);
   } else {
     if (!selectedContactEmail) {
-      const div = document.createElement("div");
-      div.classList.add("msg", "from-me");
-      div.textContent =
-        "Seleziona un contatto per inviare un messaggio privato.";
-      chatDiv.appendChild(div);
-      chatDiv.scrollTop = chatDiv.scrollHeight;
+      appendSystemMessage(
+        "Seleziona un contatto per inviare un messaggio privato."
+      );
       input.value = "";
       return;
     }
@@ -329,12 +360,9 @@ function sendVoiceMessage(blob) {
       });
     } else {
       if (!selectedContactEmail) {
-        const div = document.createElement("div");
-        div.classList.add("msg", "from-me");
-        div.textContent =
-          "Seleziona un contatto per inviare un messaggio vocale privato.";
-        chatDiv.appendChild(div);
-        chatDiv.scrollTop = chatDiv.scrollHeight;
+        appendSystemMessage(
+          "Seleziona un contatto per inviare un messaggio vocale privato."
+        );
         return;
       }
       socket.emit("voice-message", {
@@ -391,8 +419,24 @@ function appendSystemMessage(text) {
   const div = document.createElement("div");
   div.classList.add("msg");
   div.textContent = text;
-  chatDiv.appendChild(div);
-  chatDiv.scrollTop = chatDiv.scrollHeight;
+  // MESSAGGIO TECNICO NEL PANNELLO LOG, NON IN MEZZO ALLA CHAT
+  if (callLogDiv) {
+    callLogDiv.appendChild(div);
+    callLogDiv.scrollTop = callLogDiv.scrollHeight;
+    clearCallLogIfTooLong();
+  } else {
+    chatDiv.appendChild(div);
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+  }
+}
+
+// limita il log per non farlo crescere all'infinito
+function clearCallLogIfTooLong() {
+  if (!callLogDiv) return;
+  const maxMessages = 50;
+  while (callLogDiv.children.length > maxMessages) {
+    callLogDiv.removeChild(callLogDiv.firstChild);
+  }
 }
 
 // ---- WEBRTC: AUDIO E VIDEO ----
@@ -433,7 +477,6 @@ function createPeerConnection(targetEmail) {
       remoteAudioElement.autoplay = true;
       remoteAudioElement.controls = true;
       appendSystemMessage("Audio remoto connesso.");
-      chatDiv.appendChild(remoteAudioElement);
     }
     remoteAudioElement.srcObject = remoteStream;
 
@@ -505,7 +548,6 @@ async function endCall(reason = "Chiamata terminata.") {
 
   if (remoteAudioElement) {
     remoteAudioElement.srcObject = null;
-    remoteAudioElement.remove();
     remoteAudioElement = null;
   }
 
