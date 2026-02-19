@@ -20,7 +20,25 @@ const io = new Server(server);
 const PORT = process.env.PORT || 8080;
 
 // modalità test OTP (niente invio SMTP reale)
-const TEST_MODE = process.env.TEST_MODE === "true";
+// su Render: TEST_MODE può essere "true"/"false", "1"/"0", "yes"/"no"
+const rawTestMode = (process.env.TEST_MODE || "").toString().trim().toLowerCase();
+const TEST_MODE = rawTestMode === "true" || rawTestMode === "1" || rawTestMode === "yes";
+
+console.log("Valore TEST_MODE (env):", process.env.TEST_MODE);
+console.log("Valore TEST_MODE (boolean):", TEST_MODE);
+
+// CONFIG EMAIL da variabili d'ambiente (NO password in chiaro)
+// Su Render imposta ad es.:
+// SMTP_HOST = mail.infomaniak.com
+// SMTP_PORT = 587
+// SMTP_USER = gnosis@ik.me
+// SMTP_PASS = <la tua password>
+// opzionale: SMTP_FROM_NAME = "ZEUS APP"
+const SMTP_HOST = process.env.SMTP_HOST || "mail.infomaniak.com";
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
+const SMTP_USER = process.env.SMTP_USER || "gnosis@ik.me";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || "ZEUS APP";
 
 // utenti in “database” in memoria
 // struttura: [{ name, email }]
@@ -38,21 +56,25 @@ app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---- CONFIGURAZIONE EMAIL (Nodemailer + Infomaniak) ----
-// Mittente: gnosis@ik.me (Infomaniak, SMTP autenticato)
-// Server SMTP Infomaniak: mail.infomaniak.com, porta 587, STARTTLS
 let transporter = null;
 
 if (!TEST_MODE) {
+  if (!SMTP_PASS) {
+    console.warn("ATTENZIONE: SMTP_PASS non impostata. L'invio email fallirà.");
+  }
+
   transporter = nodemailer.createTransport({
-    host: "mail.infomaniak.com",
-    port: 587,
+    host: SMTP_HOST,
+    port: SMTP_PORT,
     secure: false, // STARTTLS su 587
     auth: {
-      user: "gnosis@ik.me",
-      pass: "Sugunnu1000", // <-- QUI DEVI METTERE LA PASSWORD ESATTA DELLA CASELLA
+      user: SMTP_USER,
+      pass: SMTP_PASS,
     },
   });
+
   console.log("Modalità EMAIL reale attiva (TEST_MODE = false).");
+  console.log(`SMTP host: ${SMTP_HOST}:${SMTP_PORT}, user: ${SMTP_USER}`);
 } else {
   console.log("ATTENZIONE: TEST_MODE = true, OTP NON inviato via email, solo log.");
 }
@@ -93,8 +115,8 @@ app.post("/api/login-request", async (req, res) => {
 
   // modalità normale: prepara email inviata a TE (admin)
   const mailOptions = {
-    from: "ZEUS APP <gnosis@ik.me>",
-    to: "gnosis@ik.me", // puoi cambiarlo se vuoi altri destinatari
+    from: `${SMTP_FROM_NAME} <${SMTP_USER}>`,
+    to: SMTP_USER, // puoi cambiarlo se vuoi altri destinatari
     subject: `Nuova richiesta ZEUS - ${name} <${email}>`,
     text:
       `Richiesta di accesso a ZEUS.\n\n` +
@@ -161,10 +183,8 @@ app.post("/api/login-verify", (req, res) => {
   return res.json({ ok: true, user });
 });
 
-// ---- API REST SEMPLICI ORIGINALE (se vuoi, puoi tenerla per debug) ----
+// ---- API REST SEMPLICI ORIGINALE (debug) ----
 
-// login: registra utente se non esiste, restituisce dati utente
-// (NON più usata dal frontend quando avremo l'OTP, ma la lasciamo)
 app.post("/api/login", (req, res) => {
   const { name, email } = req.body || {};
 
@@ -172,7 +192,6 @@ app.post("/api/login", (req, res) => {
     return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
   }
 
-  // cerca se esiste già
   let user = users.find((u) => u.email === email);
   if (!user) {
     user = { name, email };
@@ -204,7 +223,6 @@ io.on("connection", (socket) => {
 
   // ---- CHAT TESTO ----
 
-  // messaggio di conferenza (broadcast)
   socket.on("chat-message", (text) => {
     const from = socket.data.user;
     if (!from) return;
@@ -216,7 +234,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // messaggio privato
   socket.on("private-message", ({ toEmail, text }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !text) return;
@@ -224,14 +241,12 @@ io.on("connection", (socket) => {
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
 
-    // manda a destinatario
     io.to(targetSocketId).emit("private-message", {
       from,
       text,
       ts: Date.now(),
     });
 
-    // echo anche al mittente (così vede il suo messaggio)
     socket.emit("private-message", {
       from,
       text,
@@ -249,7 +264,6 @@ io.on("connection", (socket) => {
     if (!audio) return;
 
     if (mode === "conference") {
-      // broadcast a tutti
       io.emit("voice-message", {
         mode: "conference",
         from,
@@ -260,7 +274,6 @@ io.on("connection", (socket) => {
       const targetSocketId = onlineSocketsByEmail[toEmail];
       if (!targetSocketId) return;
 
-      // al destinatario
       io.to(targetSocketId).emit("voice-message", {
         mode: "private",
         from,
@@ -268,7 +281,6 @@ io.on("connection", (socket) => {
         ts: Date.now(),
       });
 
-      // echo al mittente
       socket.emit("voice-message", {
         mode: "private",
         from,
@@ -279,9 +291,7 @@ io.on("connection", (socket) => {
   });
 
   // ---- SEGNALAZIONE WEBRTC (AUDIO + VIDEO) ----
-  // Tutto è solo “forward” tra mittente e destinatario
 
-  // offerta di chiamata (audio o video)
   socket.on("call-offer", ({ toEmail, offer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !offer) return;
@@ -296,7 +306,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // risposta alla chiamata
   socket.on("call-answer", ({ toEmail, answer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !answer) return;
@@ -311,7 +320,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // ICE candidate
   socket.on("call-ice-candidate", ({ toEmail, candidate }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !candidate) return;
@@ -325,7 +333,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // hangup
   socket.on("call-hangup", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
@@ -338,7 +345,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // rifiuto chiamata
   socket.on("call-reject", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
@@ -351,11 +357,9 @@ io.on("connection", (socket) => {
     });
   });
 
-  // disconnessione
   socket.on("disconnect", () => {
     const user = socket.data.user;
     if (user && user.email) {
-      // rimuovi dalla mappa online
       const currentId = onlineSocketsByEmail[user.email];
       if (currentId === socket.id) {
         delete onlineSocketsByEmail[user.email];
