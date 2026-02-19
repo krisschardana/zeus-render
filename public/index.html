@@ -24,10 +24,6 @@
         box-sizing: border-box;
       }
 
-      /* MODIFICA RESPONSIVE:
-         - tolgo height:100vh (problemi su mobile)
-         - uso min-height:100vh / 100dvh per adattarsi meglio su telefoni
-      */
       html,
       body {
         margin: 0;
@@ -42,7 +38,7 @@
         justify-content: center;
         align-items: center;
         min-height: 100vh;
-        min-height: 100dvh; /* viewport reale su mobile */ [web:119]
+        min-height: 100dvh;
         background: radial-gradient(
           circle at top,
           #020617 0,
@@ -51,17 +47,13 @@
         );
         color: var(--text-primary);
         padding: 8px;
+        overflow: hidden; /* blocca lo scroll della pagina, scorre solo la chat */
       }
 
-      /* contenitore principale con bordo blu glow */
+      /* contenitore principale */
       #app-shell {
         width: 100%;
         max-width: 1200px;
-        /* MODIFICA RESPONSIVE:
-           - uso min-height invece di height fissa
-           - max-height la lascio, ma si sblocca su mobile più stretto
-        */
-        min-height: 0;
         height: 100%;
         max-height: 720px;
         background: var(--bg-panel);
@@ -81,8 +73,6 @@
         display: none;
       }
 
-      /* HEADER SUPERIORE */
-
       header {
         padding: 10px 18px;
         background: linear-gradient(
@@ -98,7 +88,7 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        flex-shrink: 0; /* non si schiaccia su schermi piccoli */ [web:120]
+        flex-shrink: 0;
       }
 
       header::before {
@@ -111,7 +101,6 @@
         display: flex;
         flex: 1;
         min-height: 0; /* permette allo scroll interno di funzionare */
-        height: auto;
       }
 
       /* SIDEBAR CONTATTI */
@@ -128,6 +117,7 @@
         padding: 10px;
         box-sizing: border-box;
         overflow-y: auto;
+        flex-shrink: 0;
       }
 
       #contacts h2 {
@@ -209,8 +199,6 @@
         color: var(--text-muted);
       }
 
-      /* Bottoni header rotondi con icone */
-
       .icon-btn {
         border: none;
         border-radius: 999px;
@@ -230,7 +218,7 @@
       }
 
       .icon-btn span {
-        display: none; /* usiamo solo l’icona */
+        display: none;
       }
 
       .icon-btn:active {
@@ -297,7 +285,7 @@
       /* AREA VIDEO UNICA */
 
       #video-area {
-        display: none; /* nascosta finché non c'è chiamata */
+        display: none;
         padding: 10px 16px;
         border-bottom: 1px solid var(--border-subtle);
         background: radial-gradient(circle at top, #020617 0%, #000000 80%);
@@ -340,6 +328,7 @@
         background: #000;
       }
 
+      /* CHAT: unico elemento scrollabile dell'app */
       #chat {
         flex: 1;
         overflow-y: auto;
@@ -515,7 +504,7 @@
         font-size: 12px;
       }
 
-      /* TABLET: layout ancora a colonne ma più compatto */
+      /* TABLET */
       @media (max-width: 900px) {
         #layout {
           flex-direction: column;
@@ -537,11 +526,8 @@
         }
       }
 
-      /* MOBILE STRETTO */
+      /* MOBILE */
       @media (max-width: 640px) {
-        /* MODIFICA: il contenitore può occupare tutto lo schermo,
-           togli i bordi arrotondati, niente max-height blocco
-        */
         body {
           padding: 0;
         }
@@ -618,10 +604,8 @@
               </span>
               <button id="audio-call-btn" class="icon-btn"></button>
               <button id="video-call-btn" class="icon-btn"></button>
-              <!-- Il bottone conferenza viene creato da app.js con id="conference-toggle" -->
             </div>
 
-            <!-- AREA VIDEO UNICA -->
             <div id="video-area">
               <div id="video-wrapper">
                 <video id="remoteVideo" autoplay playsinline></video>
@@ -641,7 +625,7 @@
                 <button id="send">
                   ✉️ <span>Invia</span>
                 </button>
-                <!-- Il bottone 🎤 per i messaggi vocali viene aggiunto via app.js qui dentro -->
+                <!-- Il bottone 🎤 viene aggiunto da app.js -->
               </div>
             </div>
           </div>
@@ -652,7 +636,6 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="app.js"></script>
 
-    <!-- LOGIN SEMPLICE (senza OTP) -->
     <script>
       (function () {
         const loginView = document.getElementById("login");
@@ -665,7 +648,6 @@
         const infoBox = document.getElementById("info");
         const errorBox = document.getElementById("error");
 
-        // di default: mostra il login, nascondi app
         loginView.style.display = "flex";
         appView.style.display = "none";
 
@@ -676,7 +658,6 @@
           errorBox.textContent = msg || "";
         }
 
-        // LOGIN DIRETTO tramite /api/login-request (OTP in standby lato server)
         loginBtn.addEventListener("click", async () => {
           setError("");
           setInfo("");
@@ -702,12 +683,10 @@
             if (!data.ok) {
               setError(data.error || "Errore di accesso.");
             } else {
-              // login OK: salviamo user e mostriamo l'app
               window.ZEUS_CURRENT_USER = data.user;
               loginView.style.display = "none";
               appView.style.display = "flex";
 
-              // se app.js usa window.ZEUS_CURRENT_USER, lo trova qui
               if (window.initZeusApp) {
                 try {
                   window.initZeusApp(data.user);

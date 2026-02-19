@@ -8,6 +8,7 @@ const onlineUsers = {}; // email -> true/false
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
+let supportedAudioMimeType = null; // per scegliere un formato compatibile
 
 // ---- STATO CHIAMATA (WEBRTC) ----
 let isAudioCallActive = false;
@@ -22,9 +23,7 @@ let currentCallPeerEmail = null; // email del contatto con cui sei in chiamata
 let ringtoneAudio = null; // campanella
 
 const rtcConfig = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" } // STUN pubblico base
-  ],
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
 // elementi DOM
@@ -50,7 +49,7 @@ videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
 
-// ---- NUOVO: pannello log tecnico separato ----
+// ---- pannello log tecnico separato ----
 let callLogDiv = document.getElementById("call-log");
 if (!callLogDiv) {
   callLogDiv = document.createElement("div");
@@ -63,14 +62,13 @@ if (!callLogDiv) {
   callLogDiv.style.borderTop = "1px solid rgba(15,23,42,0.6)";
   callLogDiv.style.boxSizing = "border-box";
 
-  // lo mettiamo subito sopra il composer, sotto l'area chat
   const composer = document.getElementById("composer");
   if (composer && chatDiv && chatDiv.parentNode) {
     chatDiv.parentNode.insertBefore(callLogDiv, composer);
   }
 }
 
-// ---- GRAFICA BOTTONI (solo icone, niente testo che cambia) ----
+// ---- grafica bottoni ----
 if (audioCallBtn) {
   audioCallBtn.textContent = "";
 }
@@ -98,7 +96,46 @@ window.addEventListener("DOMContentLoaded", () => {
   if (inputBar) {
     inputBar.appendChild(micBtn);
   }
+  initAudioMimeType(); // determina il formato audio supportato per i vocali
 });
+
+// ---- scelta formato audio compatibile ----
+function initAudioMimeType() {
+  // se MediaRecorder non esiste (vecchi browser), disattiviamo il tasto
+  if (typeof MediaRecorder === "undefined") {
+    appendSystemMessage(
+      "Questo browser non supporta la registrazione vocale (MediaRecorder assente)."
+    );
+    micBtn.disabled = true;
+    micBtn.title = "Registrazione vocale non supportata su questo dispositivo.";
+    return;
+  }
+
+  // Ordine di prova: webm, ogg, mp4 (solo se supportati)
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/ogg",
+  ];
+
+  for (const type of candidates) {
+    if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
+      supportedAudioMimeType = type;
+      appendSystemMessage(
+        "Formato messaggi vocali: " + supportedAudioMimeType
+      );
+      return;
+    }
+  }
+
+  // Nessun formato supportato in modo affidabile
+  appendSystemMessage(
+    "Nessun formato audio compatibile trovato per i messaggi vocali. Disabilito il tasto 🎤."
+  );
+  micBtn.disabled = true;
+  micBtn.title = "Messaggi vocali non supportati su questo dispositivo.";
+}
 
 // funzioni vista
 function showLogin() {
@@ -108,7 +145,7 @@ function showLogin() {
 
 function showApp() {
   if (loginView) loginView.style.display = "none";
-  if (appView) appView.style.display = "block";
+  if (appView) appView.style.display = "flex";
   updateChatHeader();
 }
 
@@ -220,8 +257,6 @@ async function loadUsers() {
         });
         div.classList.add("selected");
         updateChatHeader();
-
-        // quando scelgo un contatto, pulisco un po' il log tecnico
         clearCallLogIfTooLong();
       });
 
@@ -313,21 +348,56 @@ input.addEventListener("keypress", (e) => {
 // ---- GESTIONE MESSAGGI VOCALI (CLIENT) ----
 async function startRecording() {
   if (isRecording) return;
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    appendSystemMessage(
+      "Questo browser non permette di usare il microfono per i messaggi vocali."
+    );
+    return;
+  }
+
+  if (!supportedAudioMimeType) {
+    appendSystemMessage(
+      "Formato audio per i messaggi vocali non supportato su questo dispositivo."
+    );
+    return;
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaRecorder = new MediaRecorder(stream);
+    try {
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType: supportedAudioMimeType,
+      });
+    } catch (e) {
+      console.warn("MediaRecorder mimeType non accettato, uso default.", e);
+      mediaRecorder = new MediaRecorder(stream);
+    }
+
     audioChunks = [];
 
     mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
+      if (event.data && event.data.size > 0) {
         audioChunks.push(event.data);
       }
     };
 
+    mediaRecorder.onerror = (ev) => {
+      console.error("MediaRecorder errore:", ev.error || ev);
+      appendSystemMessage("Errore durante la registrazione vocale.");
+    };
+
     mediaRecorder.onstop = () => {
-      const blob = new Blob(audioChunks, { type: "audio/webm" });
-      sendVoiceMessage(blob);
+      if (!audioChunks.length) {
+        appendSystemMessage("Nessun audio registrato.");
+      } else {
+        const blob = new Blob(audioChunks, {
+          type: supportedAudioMimeType || "audio/webm",
+        });
+        sendVoiceMessage(blob);
+      }
       audioChunks = [];
+      stream.getTracks().forEach((t) => t.stop());
     };
 
     mediaRecorder.start();
@@ -408,6 +478,11 @@ socket.on("voice-message", (msg) => {
   const audio = document.createElement("audio");
   audio.controls = true;
   audio.src = msg.audio;
+
+  audio.onerror = () => {
+    label.textContent += " (errore audio: formato non supportato dal browser).";
+  };
+
   div.appendChild(audio);
 
   chatDiv.appendChild(div);
@@ -419,7 +494,6 @@ function appendSystemMessage(text) {
   const div = document.createElement("div");
   div.classList.add("msg");
   div.textContent = text;
-  // MESSAGGIO TECNICO NEL PANNELLO LOG, NON IN MEZZO ALLA CHAT
   if (callLogDiv) {
     callLogDiv.appendChild(div);
     callLogDiv.scrollTop = callLogDiv.scrollHeight;
@@ -430,7 +504,6 @@ function appendSystemMessage(text) {
   }
 }
 
-// limita il log per non farlo crescere all'infinito
 function clearCallLogIfTooLong() {
   if (!callLogDiv) return;
   const maxMessages = 50;
