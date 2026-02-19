@@ -1,16 +1,16 @@
 // server_step7.js
-// ZEUS server: chat + vocali + WebRTC audio/video + EMAIL OTP (standby per Render)
+// ZEUS server: chat + vocali + WebRTC audio/video + EMAIL OTP (con modalità TEST)
 
-// ATTENZIONE: il codice OTP resta nel file ma NON viene usato per il login.
-// Quando avrai una VPS, potrai riattivarlo facilmente.
+// ATTENZIONE: per usare la modalità test OTP su Render
+// imposta la variabile di ambiente TEST_MODE = true nel pannello Render.
 
 const express = require("express");
 const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
 const bodyParser = require("body-parser");
-const nodemailer = require("nodemailer"); // <-- email (non usata ora)
-const crypto = require("crypto");         // <-- per OTP sicuro (non usato ora)
+const nodemailer = require("nodemailer"); // <-- email
+const crypto = require("crypto");         // <-- per OTP sicuro
 
 const app = express();
 const server = http.createServer(app);
@@ -47,7 +47,7 @@ const users = [];
 // mappa email -> socket.id (utente online)
 const onlineSocketsByEmail = {};
 
-// mappa email -> dati OTP (per futuro uso)
+// mappa email -> dati OTP
 // { [email]: { code: '123456', expiresAt: 1234567890, name: '...' } }
 const pendingOtps = {};
 
@@ -79,17 +79,16 @@ if (!TEST_MODE) {
   console.log("ATTENZIONE: TEST_MODE = true, OTP NON inviato via email, solo log.");
 }
 
-// funzione per creare OTP 6 cifre sicuro (per futuro uso)
+// funzione per creare OTP 6 cifre sicuro
 function generateOtp() {
   return crypto.randomInt(100000, 999999).toString();
 }
 
 // ---- API REST EMAIL + OTP ----
-// *** STANDBY OTP ***
-// Ora /api/login-request fa login diretto e NON genera né invia OTP,
-// così l'app non viene bloccata da Render/SMTP.
 
-// 1) Richiesta login: LOGIN DIRETTO (OTP in standby)
+// 1) Richiesta login: genera OTP
+//    - in modalità normale: manda email a TE
+//    - in TEST_MODE: NON manda email, logga il codice in console
 app.post("/api/login-request", async (req, res) => {
   const { name, email } = req.body || {};
 
@@ -97,18 +96,50 @@ app.post("/api/login-request", async (req, res) => {
     return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
   }
 
-  // LOGIN DIRETTO: cerca o crea utente, senza OTP
-  let user = users.find((u) => u.email === email);
-  if (!user) {
-    user = { name, email };
-    users.push(user);
+  // genera OTP e scadenza (es. 10 minuti)
+  const code = generateOtp();
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minuti
+
+  pendingOtps[email] = { code, expiresAt, name };
+
+  // se siamo in modalità TEST, non usiamo SMTP
+  if (TEST_MODE) {
+    console.log("=== OTP TEST MODE ===");
+    console.log(`OTP per ${name} <${email}> = ${code}`);
+    console.log("Questo codice NON è stato inviato via email (TEST_MODE).");
+    return res.json({
+      ok: true,
+      message: "OTP generato in modalità test. Controlla i log del server.",
+    });
   }
 
-  // se in futuro vorrai riattivare OTP, userai pendingOtps + generateOtp qui.
-  return res.json({ ok: true, user });
+  // modalità normale: prepara email inviata a TE (admin)
+  const mailOptions = {
+    from: `${SMTP_FROM_NAME} <${SMTP_USER}>`,
+    to: SMTP_USER, // puoi cambiarlo se vuoi altri destinatari
+    subject: `Nuova richiesta ZEUS - ${name} <${email}>`,
+    text:
+      `Richiesta di accesso a ZEUS.\n\n` +
+      `Nome: ${name}\n` +
+      `Email utente: ${email}\n\n` +
+      `Codice OTP (da comunicare all'utente): ${code}\n\n` +
+      `Il codice scade tra 10 minuti.`,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log("Email OTP inviata per", email);
+    return res.json({ ok: true, message: "OTP generato e inviato." });
+  } catch (err) {
+    console.error("Errore invio email OTP:", err);
+    return res.json({
+      ok: false,
+      error: "Impossibile inviare email OTP. Controlla configurazione server.",
+    });
+  }
 });
 
-// 2) Verifica OTP (NON usata ora, tenuta pronta per VPS futura)
+// 2) Verifica OTP: se corretto, registra/ritorna utente (come /api/login prima)
 app.post("/api/login-verify", (req, res) => {
   const { name, email, code } = req.body || {};
 
@@ -153,6 +184,7 @@ app.post("/api/login-verify", (req, res) => {
 });
 
 // ---- API REST SEMPLICI ORIGINALE (debug) ----
+
 app.post("/api/login", (req, res) => {
   const { name, email } = req.body || {};
 
@@ -175,6 +207,7 @@ app.get("/api/users", (req, res) => {
 });
 
 // ---- SOCKET.IO ----
+
 io.on("connection", (socket) => {
   console.log("Utente connesso:", socket.id);
 
@@ -189,6 +222,7 @@ io.on("connection", (socket) => {
   });
 
   // ---- CHAT TESTO ----
+
   socket.on("chat-message", (text) => {
     const from = socket.data.user;
     if (!from) return;
@@ -221,6 +255,7 @@ io.on("connection", (socket) => {
   });
 
   // ---- MESSAGGI VOCALI ----
+
   socket.on("voice-message", (payload) => {
     const from = socket.data.user;
     if (!from) return;
@@ -256,6 +291,7 @@ io.on("connection", (socket) => {
   });
 
   // ---- SEGNALAZIONE WEBRTC (AUDIO + VIDEO) ----
+
   socket.on("call-offer", ({ toEmail, offer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !offer) return;

@@ -82,32 +82,28 @@ window.addEventListener("DOMContentLoaded", () => {
 
 // funzioni vista
 function showLogin() {
-  loginView.style.display = "flex";
-  appView.style.display = "none";
+  if (loginView) loginView.style.display = "flex";
+  if (appView) appView.style.display = "none";
 }
 
 function showApp() {
-  loginView.style.display = "none";
-  appView.style.display = "block";
+  if (loginView) loginView.style.display = "none";
+  if (appView) appView.style.display = "block";
   updateChatHeader();
 }
 
 // header
 function updateChatHeader() {
+  if (!chatTitleText) return;
+
   if (isConference) {
-    if (chatTitleText) {
-      chatTitleText.textContent = "Conferenza globale";
-    }
+    chatTitleText.textContent = "Conferenza globale";
   } else {
     if (selectedContactEmail) {
-      if (chatTitleText) {
-        chatTitleText.textContent = `Chat privata/chiamata con: ${selectedContactEmail}`;
-      }
+      chatTitleText.textContent = `Chat privata/chiamata con: ${selectedContactEmail}`;
     } else {
-      if (chatTitleText) {
-        chatTitleText.textContent =
-          "Seleziona un contatto per iniziare una chat privata (le chiamate in arrivo funzionano anche senza selezione).";
-      }
+      chatTitleText.textContent =
+        "Seleziona un contatto per iniziare una chat privata (le chiamate in arrivo funzionano anche senza selezione).";
     }
   }
 }
@@ -118,7 +114,7 @@ conferenceBtn.addEventListener("click", () => {
   updateChatHeader();
 });
 
-// ---- LOGIN CON OTP (NUOVO FLUSSO) ----
+// ---- LOGIN SEMPLICE (senza OTP) ----
 loginBtn.addEventListener("click", async () => {
   const name = nameInput.value.trim();
   const email = emailInput.value.trim();
@@ -127,98 +123,81 @@ loginBtn.addEventListener("click", async () => {
     return;
   }
 
-  // 1) Richiesta OTP al server
-  errorDiv.textContent = "Richiesta OTP, attendi...";
+  errorDiv.textContent = "Accesso in corso...";
+  loginBtn.disabled = true;
+  loginBtn.textContent = "Accesso in corso...";
+
   try {
-    const resReq = await fetch("/api/login-request", {
+    const res = await fetch("/api/login-request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, email }),
     });
-    const dataReq = await resReq.json();
+    const data = await res.json();
 
-    if (!dataReq.ok) {
-      errorDiv.textContent = dataReq.error || "Errore nella richiesta OTP.";
+    if (!data.ok) {
+      errorDiv.textContent = data.error || "Errore di accesso.";
       return;
     }
 
-    // 2) Prompt per inserire il codice che ricevi via mail
-    const code = prompt(
-      "Ti è stata inviata una mail con il codice OTP.\nInserisci qui il codice:"
-    );
-
-    if (!code) {
-      errorDiv.textContent = "Operazione annullata: nessun codice inserito.";
-      return;
-    }
-
-    errorDiv.textContent = "Verifica OTP in corso...";
-
-    // 3) Verifica OTP
-    const resVer = await fetch("/api/login-verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, code: code.trim() }),
-    });
-    const dataVer = await resVer.json();
-
-    if (!dataVer.ok) {
-      errorDiv.textContent = dataVer.error || "OTP non valido.";
-      return;
-    }
-
-    // 4) Se tutto ok, entri come prima
-    currentUser = dataVer.user;
+    currentUser = data.user;
     socket.emit("set-user", currentUser);
     errorDiv.textContent = "";
     showApp();
     loadUsers();
   } catch (err) {
-    console.error("Errore login con OTP", err);
+    console.error("Errore login", err);
     errorDiv.textContent = "Errore di rete durante l'accesso.";
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = "Entra";
   }
 });
 
 // carica lista utenti con pallino online
 async function loadUsers() {
-  const res = await fetch("/api/users");
-  const users = await res.json();
-  contactsList.innerHTML = "";
-  selectedContactEmail = null;
+  try {
+    const res = await fetch("/api/users");
+    const users = await res.json();
+    contactsList.innerHTML = "";
+    selectedContactEmail = null;
 
-  users.forEach((u) => {
-    const div = document.createElement("div");
-    div.className = "contact";
+    users.forEach((u) => {
+      const div = document.createElement("div");
+      div.className = "contact";
 
-    const statusDot = document.createElement("span");
-    statusDot.style.display = "inline-block";
-    statusDot.style.width = "8px";
-    statusDot.style.height = "8px";
-    statusDot.style.borderRadius = "50%";
-    statusDot.style.marginRight = "6px";
-    statusDot.style.backgroundColor = onlineUsers[u.email]
-      ? "#22c55e"
-      : "#6b7280";
+      const statusDot = document.createElement("span");
+      statusDot.style.display = "inline-block";
+      statusDot.style.width = "8px";
+      statusDot.style.height = "8px";
+      statusDot.style.borderRadius = "50%";
+      statusDot.style.marginRight = "6px";
+      statusDot.style.backgroundColor = onlineUsers[u.email]
+        ? "#22c55e"
+        : "#6b7280";
 
-    const textSpan = document.createElement("span");
-    textSpan.textContent = `${u.name} (${u.email})`;
+      const textSpan = document.createElement("span");
+      textSpan.textContent = `${u.name} (${u.email})`;
 
-    div.appendChild(statusDot);
-    div.appendChild(textSpan);
+      div.appendChild(statusDot);
+      div.appendChild(textSpan);
 
-    div.addEventListener("click", () => {
-      selectedContactEmail = u.email;
-      document.querySelectorAll(".contact").forEach((c) => {
-        c.classList.remove("selected");
+      div.addEventListener("click", () => {
+        selectedContactEmail = u.email;
+        document.querySelectorAll(".contact").forEach((c) => {
+          c.classList.remove("selected");
+        });
+        div.classList.add("selected");
+        updateChatHeader();
       });
-      div.classList.add("selected");
-      updateChatHeader();
+
+      contactsList.appendChild(div);
     });
 
-    contactsList.appendChild(div);
-  });
-
-  updateChatHeader();
+    updateChatHeader();
+  } catch (err) {
+    console.error("Errore loadUsers", err);
+  }
 }
 
 // presenza

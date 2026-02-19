@@ -114,7 +114,7 @@
         gap: 8px;
         margin-bottom: 4px;
         transition: background 0.15s ease, transform 0.1s.ease,
-          box-shadow 0.15s ease;
+          box-shadow 0.15s.ease;
       }
 
       .contact:hover {
@@ -468,28 +468,6 @@
         font-size: 12px;
       }
 
-      /* box OTP step 2 */
-      #otp-step {
-        margin-top: 16px;
-        padding-top: 12px;
-        border-top: 1px dashed rgba(148, 163, 184, 0.5);
-        display: none;
-      }
-
-      #otp-step label {
-        margin-top: 6px;
-      }
-
-      #otp-step button {
-        background: var(--accent-blue);
-        box-shadow: 0 0 12px rgba(37, 99, 235, 0.7);
-      }
-
-      #otp-step button:hover {
-        background: #1d4ed8;
-        box-shadow: 0 0 16px rgba(37, 99, 235, 0.9);
-      }
-
       @media (max-width: 900px) {
         #layout {
           flex-direction: column;
@@ -553,28 +531,15 @@
         <div id="login-box">
           <h1>ZEUS Entra</h1>
 
-          <!-- STEP 1: nome + email -->
+          <!-- LOGIN SEMPLICE: nome + email -->
           <label for="name">Nome</label>
           <input id="name" type="text" placeholder="Il tuo nome" />
           <label for="email">Email</label>
           <input id="email" type="email" placeholder="la-tua@email" />
-          <button id="login-btn">Richiedi codice OTP</button>
+          <button id="login-btn">Entra</button>
 
           <div id="info"></div>
           <div id="error"></div>
-
-          <!-- STEP 2: inserimento codice OTP -->
-          <div id="otp-step">
-            <label for="otp-code">Codice OTP</label>
-            <input
-              id="otp-code"
-              type="text"
-              inputmode="numeric"
-              maxlength="6"
-              placeholder="Inserisci il codice a 6 cifre"
-            />
-            <button id="otp-verify-btn">Conferma OTP e entra</button>
-          </div>
         </div>
       </div>
 
@@ -626,7 +591,7 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="app.js"></script>
 
-    <!-- LOGIN + OTP FLOW -->
+    <!-- LOGIN SEMPLICE (senza OTP) -->
     <script>
       (function () {
         const loginView = document.getElementById("login");
@@ -635,10 +600,6 @@
         const nameInput = document.getElementById("name");
         const emailInput = document.getElementById("email");
         const loginBtn = document.getElementById("login-btn");
-
-        const otpStep = document.getElementById("otp-step");
-        const otpInput = document.getElementById("otp-code");
-        const otpVerifyBtn = document.getElementById("otp-verify-btn");
 
         const infoBox = document.getElementById("info");
         const errorBox = document.getElementById("error");
@@ -654,7 +615,7 @@
           errorBox.textContent = msg || "";
         }
 
-        // STEP 1: /api/login-request -> genera OTP
+        // LOGIN DIRETTO tramite /api/login-request (OTP in standby lato server)
         loginBtn.addEventListener("click", async () => {
           setError("");
           setInfo("");
@@ -668,7 +629,7 @@
           }
 
           loginBtn.disabled = true;
-          loginBtn.textContent = "Invio richiesta...";
+          loginBtn.textContent = "Accesso in corso...";
           try {
             const res = await fetch("/api/login-request", {
               method: "POST",
@@ -678,58 +639,7 @@
             const data = await res.json();
 
             if (!data.ok) {
-              setError(data.error || "Errore nella richiesta OTP.");
-              otpStep.style.display = "none";
-            } else {
-              // in TEST_MODE: il codice è nei log
-              // in reale: ricevi email su gnosis@ik.me
-              setInfo(
-                "Codice OTP generato. Inserisci il codice a 6 cifre qui sotto."
-              );
-              otpStep.style.display = "block";
-              otpInput.focus();
-            }
-          } catch (err) {
-            console.error(err);
-            setError("Errore di rete nella richiesta OTP.");
-            otpStep.style.display = "none";
-          } finally {
-            loginBtn.disabled = false;
-            loginBtn.textContent = "Richiedi codice OTP";
-          }
-        });
-
-        // STEP 2: /api/login-verify -> verifica OTP e, se ok, entra nell'app
-        otpVerifyBtn.addEventListener("click", async () => {
-          setError("");
-          setInfo("");
-
-          const name = nameInput.value.trim();
-          const email = emailInput.value.trim();
-          const code = otpInput.value.trim();
-
-          if (!name || !email || !code) {
-            setError("Nome, email e codice sono obbligatori.");
-            return;
-          }
-
-          if (code.length !== 6) {
-            setError("Il codice OTP deve avere 6 cifre.");
-            return;
-          }
-
-          otpVerifyBtn.disabled = true;
-          otpVerifyBtn.textContent = "Verifico...";
-          try {
-            const res = await fetch("/api/login-verify", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, email, code }),
-            });
-            const data = await res.json();
-
-            if (!data.ok) {
-              setError(data.error || "Codice OTP non valido.");
+              setError(data.error || "Errore di accesso.");
             } else {
               // login OK: salviamo user e mostriamo l'app
               window.ZEUS_CURRENT_USER = data.user;
@@ -747,17 +657,10 @@
             }
           } catch (err) {
             console.error(err);
-            setError("Errore di rete nella verifica OTP.");
+            setError("Errore di rete durante l'accesso.");
           } finally {
-            otpVerifyBtn.disabled = false;
-            otpVerifyBtn.textContent = "Conferma OTP e entra";
-          }
-        });
-
-        // invio con Enter nel campo OTP
-        otpInput.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") {
-            otpVerifyBtn.click();
+            loginBtn.disabled = false;
+            loginBtn.textContent = "Entra";
           }
         });
       })();
