@@ -1,8 +1,19 @@
+// ZEUS APP FRONTEND - app.js
+// Layout:
+// - Desktop: contatti + chat affiancati (come prima)
+// - Mobile (< 640px): schermata separata RUBRICA, tap su contatto apre SCHERMATA CHAT,
+//   bottone "← Rubrica" per tornare alla lista
+
 const socket = io();
 let currentUser = null;
 let selectedContactEmail = null;
 let isConference = false;
 const onlineUsers = {}; // email -> true/false
+
+// ---- RILEVAZIONE MOBILE ----
+function isMobileView() {
+  return window.innerWidth <= 640;
+}
 
 // ---- AUDIO / MESSAGGI VOCALI ----
 let mediaRecorder = null;
@@ -35,7 +46,9 @@ const emailInput = document.getElementById("email");
 const loginBtn = document.getElementById("login-btn");
 const errorDiv = document.getElementById("error");
 
+const contactsPanel = document.getElementById("contacts");
 const contactsList = document.getElementById("contacts-list");
+const chatArea = document.getElementById("chat-area");
 const chatDiv = document.getElementById("chat");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
@@ -49,6 +62,38 @@ const videoCallBtn = document.getElementById("video-call-btn");
 videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
+
+// ---- NUOVO: bottone "← Rubrica" per mobile ----
+let backToContactsBtn = null;
+if (chatHeader) {
+  backToContactsBtn = document.createElement("button");
+  backToContactsBtn.id = "back-to-contacts-btn";
+  backToContactsBtn.textContent = "← Rubrica";
+  backToContactsBtn.style.display = "none"; // solo mobile, solo in modalità chat
+  backToContactsBtn.style.marginRight = "8px";
+  backToContactsBtn.style.padding = "4px 8px";
+  backToContactsBtn.style.fontSize = "13px";
+  backToContactsBtn.style.borderRadius = "999px";
+  backToContactsBtn.style.border = "1px solid rgba(148,163,184,0.7)";
+  backToContactsBtn.style.background = "#020617";
+  backToContactsBtn.style.color = "#e5e7eb";
+  backToContactsBtn.style.cursor = "pointer";
+  backToContactsBtn.style.flexShrink = "0";
+
+  chatHeader.insertBefore(backToContactsBtn, chatHeader.firstChild);
+
+  backToContactsBtn.addEventListener("click", () => {
+    // su mobile torna alla schermata rubrica
+    if (isMobileView()) {
+      selectedContactEmail = null;
+      if (chatArea) chatArea.style.display = "none";
+      if (contactsPanel) contactsPanel.style.display = "flex";
+      backToContactsBtn.style.display = "none";
+      updateChatHeader();
+      clearCallLogIfTooLong();
+    }
+  });
+}
 
 // ---- NUOVO: pannello log tecnico separato ----
 let callLogDiv = document.getElementById("call-log");
@@ -100,7 +145,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 });
 
-// funzioni vista
+// ---- GESTIONE VISTE LOGIN / APP ----
 function showLogin() {
   if (loginView) loginView.style.display = "flex";
   if (appView) appView.style.display = "none";
@@ -108,7 +153,20 @@ function showLogin() {
 
 function showApp() {
   if (loginView) loginView.style.display = "none";
-  if (appView) appView.style.display = "block";
+  if (appView) appView.style.display = "flex";
+
+  // su mobile: all'avvio mostra SOLO rubrica
+  if (isMobileView()) {
+    if (contactsPanel) contactsPanel.style.display = "flex";
+    if (chatArea) chatArea.style.display = "none";
+    if (backToContactsBtn) backToContactsBtn.style.display = "none";
+  } else {
+    // desktop: layout a due colonne
+    if (contactsPanel) contactsPanel.style.display = "block";
+    if (chatArea) chatArea.style.display = "flex";
+    if (backToContactsBtn) backToContactsBtn.style.display = "none";
+  }
+
   updateChatHeader();
 }
 
@@ -174,13 +232,48 @@ loginBtn.addEventListener("click", async () => {
   }
 });
 
+// ---- CAMBIO VISTA CONTATTI/CHAT SU MOBILE ----
+function goToChatView() {
+  if (!isMobileView()) return; // su desktop non cambia nulla
+
+  if (contactsPanel) contactsPanel.style.display = "none";
+  if (chatArea) chatArea.style.display = "flex";
+  if (backToContactsBtn) backToContactsBtn.style.display = "inline-flex";
+}
+
+function goToContactsView() {
+  if (!isMobileView()) return;
+
+  if (contactsPanel) contactsPanel.style.display = "flex";
+  if (chatArea) chatArea.style.display = "none";
+  if (backToContactsBtn) backToContactsBtn.style.display = "none";
+}
+
+// adattamento se ruoti lo schermo o cambi dimensione
+window.addEventListener("resize", () => {
+  if (!currentUser) return; // se non loggato, ignoriamo
+
+  if (isMobileView()) {
+    // su mobile: se non c'è un contatto selezionato, stai in rubrica
+    if (!selectedContactEmail) {
+      goToContactsView();
+    } else {
+      goToChatView();
+    }
+  } else {
+    // desktop: sempre contatti + chat insieme
+    if (contactsPanel) contactsPanel.style.display = "block";
+    if (chatArea) chatArea.style.display = "flex";
+    if (backToContactsBtn) backToContactsBtn.style.display = "none";
+  }
+});
+
 // carica lista utenti con pallino online
 async function loadUsers() {
   try {
     const res = await fetch("/api/users");
     const users = await res.json();
     contactsList.innerHTML = "";
-    selectedContactEmail = null;
 
     users.forEach((u) => {
       const div = document.createElement("div");
@@ -188,8 +281,8 @@ async function loadUsers() {
 
       const statusDot = document.createElement("span");
       statusDot.style.display = "inline-block";
-      statusDot.style.width = "8px";
-      statusDot.style.height = "8px";
+      statusDot.style.width = "9px";
+      statusDot.style.height = "9px";
       statusDot.style.borderRadius = "50%";
       statusDot.style.marginRight = "6px";
       statusDot.style.backgroundColor = onlineUsers[u.email]
@@ -202,12 +295,14 @@ async function loadUsers() {
       nameSpan.style.marginRight = "4px";
 
       const emailSpan = document.createElement("span");
-      emailSpan.textContent = `(${u.email})`;
+      emailSpan.textContent = u.email;
       emailSpan.style.fontSize = "11px";
       emailSpan.style.color = "#9ca3af";
 
       const textSpan = document.createElement("span");
+      textSpan.className = "contact-text";
       textSpan.appendChild(nameSpan);
+      textSpan.appendChild(document.createElement("br"));
       textSpan.appendChild(emailSpan);
 
       div.appendChild(statusDot);
@@ -220,6 +315,9 @@ async function loadUsers() {
         });
         div.classList.add("selected");
         updateChatHeader();
+
+        // MOBILE: quando selezioni un contatto, vai alla schermata chat come Telegram
+        goToChatView();
 
         // quando scelgo un contatto, pulisco un po' il log tecnico
         clearCallLogIfTooLong();
@@ -649,6 +747,11 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
   selectedContactEmail = from.email;
   currentCallPeerEmail = from.email;
   updateChatHeader();
+
+  // se sei su mobile e sei su rubrica, passa alla vista chat
+  if (isMobileView()) {
+    goToChatView();
+  }
 
   try {
     if (!ringtoneAudio) {

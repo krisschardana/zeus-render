@@ -24,10 +24,6 @@
         box-sizing: border-box;
       }
 
-      /* MODIFICA RESPONSIVE:
-         - tolgo height:100vh (problemi su mobile)
-         - uso min-height:100vh / 100dvh per adattarsi meglio su telefoni
-      */
       html,
       body {
         margin: 0;
@@ -42,7 +38,7 @@
         justify-content: center;
         align-items: center;
         min-height: 100vh;
-        min-height: 100dvh; /* viewport reale su mobile */ [web:119]
+        min-height: 100dvh;
         background: radial-gradient(
           circle at top,
           #020617 0,
@@ -51,17 +47,13 @@
         );
         color: var(--text-primary);
         padding: 8px;
+        overflow: hidden;
       }
 
       /* contenitore principale con bordo blu glow */
       #app-shell {
         width: 100%;
         max-width: 1200px;
-        /* MODIFICA RESPONSIVE:
-           - uso min-height invece di height fissa
-           - max-height la lascio, ma si sblocca su mobile più stretto
-        */
-        min-height: 0;
         height: 100%;
         max-height: 720px;
         background: var(--bg-panel);
@@ -98,7 +90,7 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        flex-shrink: 0; /* non si schiaccia su schermi piccoli */ [web:120]
+        flex-shrink: 0;
       }
 
       header::before {
@@ -110,7 +102,7 @@
       #layout {
         display: flex;
         flex: 1;
-        min-height: 0; /* permette allo scroll interno di funzionare */
+        min-height: 0;
         height: auto;
       }
 
@@ -230,7 +222,7 @@
       }
 
       .icon-btn span {
-        display: none; /* usiamo solo l’icona */
+        display: none;
       }
 
       .icon-btn:active {
@@ -297,7 +289,7 @@
       /* AREA VIDEO UNICA */
 
       #video-area {
-        display: none; /* nascosta finché non c'è chiamata */
+        display: none;
         padding: 10px 16px;
         border-bottom: 1px solid var(--border-subtle);
         background: radial-gradient(circle at top, #020617 0%, #000000 80%);
@@ -539,11 +531,9 @@
 
       /* MOBILE STRETTO */
       @media (max-width: 640px) {
-        /* MODIFICA: il contenitore può occupare tutto lo schermo,
-           togli i bordi arrotondati, niente max-height blocco
-        */
         body {
           padding: 0;
+          overflow: hidden;
         }
 
         #app-shell {
@@ -553,6 +543,23 @@
           border-radius: 0;
           border-left: none;
           border-right: none;
+        }
+
+        #layout {
+          flex-direction: column;
+        }
+
+        #contacts {
+          width: 100%;
+          max-height: 100%;
+          height: 100%;
+          border-right: none;
+          border-bottom: none;
+        }
+
+        #chat-area {
+          width: 100%;
+          height: 100%;
         }
 
         header {
@@ -618,7 +625,6 @@
               </span>
               <button id="audio-call-btn" class="icon-btn"></button>
               <button id="video-call-btn" class="icon-btn"></button>
-              <!-- Il bottone conferenza viene creato da app.js con id="conference-toggle" -->
             </div>
 
             <!-- AREA VIDEO UNICA -->
@@ -641,7 +647,6 @@
                 <button id="send">
                   ✉️ <span>Invia</span>
                 </button>
-                <!-- Il bottone 🎤 per i messaggi vocali viene aggiunto via app.js qui dentro -->
               </div>
             </div>
           </div>
@@ -676,7 +681,6 @@
           errorBox.textContent = msg || "";
         }
 
-        // LOGIN DIRETTO tramite /api/login-request (OTP in standby lato server)
         loginBtn.addEventListener("click", async () => {
           setError("");
           setInfo("");
@@ -702,19 +706,9 @@
             if (!data.ok) {
               setError(data.error || "Errore di accesso.");
             } else {
-              // login OK: salviamo user e mostriamo l'app
               window.ZEUS_CURRENT_USER = data.user;
               loginView.style.display = "none";
               appView.style.display = "flex";
-
-              // se app.js usa window.ZEUS_CURRENT_USER, lo trova qui
-              if (window.initZeusApp) {
-                try {
-                  window.initZeusApp(data.user);
-                } catch (e) {
-                  console.error("Errore initZeusApp:", e);
-                }
-              }
             }
           } catch (err) {
             console.error(err);
