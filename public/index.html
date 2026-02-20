@@ -47,7 +47,7 @@
         );
         color: var(--text-primary);
         padding: 8px;
-        overflow: auto; /* permettiamo lo scroll verticale della pagina */
+        overflow: auto;
       }
 
       /* contenitore principale */
@@ -100,7 +100,7 @@
       #layout {
         display: flex;
         flex: 1;
-        min-height: 0; /* permette allo scroll interno di funzionare */
+        min-height: 0;
       }
 
       /* SIDEBAR CONTATTI */
@@ -504,34 +504,8 @@
         font-size: 12px;
       }
 
-      /* TABLET */
+      /* TABLET: layout a colonna, header in alto, poi contatti, poi chat */
       @media (max-width: 900px) {
-        body {
-          padding: 4px;
-        }
-
-        #layout {
-          flex-direction: column;
-        }
-
-        #contacts {
-          width: 100%;
-          max-height: 160px;
-          height: auto;
-          border-right: none;
-          border-bottom: 1px solid var(--border-subtle);
-          display: flex;
-          flex-direction: column;
-        }
-
-        #contacts-list {
-          flex: 1;
-          overflow-y: auto;
-        }
-      }
-
-      /* MOBILE */
-      @media (max-width: 640px) {
         body {
           padding: 0;
         }
@@ -545,6 +519,28 @@
           border-right: none;
         }
 
+        #layout {
+          flex-direction: column;
+        }
+
+        #contacts {
+          width: 100%;
+          max-height: 180px;
+          height: auto;
+          border-right: none;
+          border-bottom: 1px solid var(--border-subtle);
+          display: flex;
+          flex-direction: column;
+        }
+
+        #contacts-list {
+          flex: 1;
+          overflow-y: auto;
+        }
+      }
+
+      /* MOBILE: stessa struttura del tablet, tutto full-width adattabile */
+      @media (max-width: 640px) {
         header {
           padding-inline: 12px;
           font-size: 14px;
