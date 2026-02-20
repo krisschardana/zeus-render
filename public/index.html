@@ -296,16 +296,22 @@
         background: radial-gradient(circle at top, #020617 0%, #000000 80%);
         gap: 10px;
         align-items: center;
+        justify-content: center; /* centra il wrapper orizzontalmente */
         flex-shrink: 0;
       }
 
       #video-wrapper {
         position: relative;
         width: 100%;
-        max-height: 260px;
+        max-width: 640px;
+        max-height: 360px;
+        margin: 0 auto; /* centrato nel container */
         background: #000;
         border-radius: 12px;
         overflow: hidden;
+        display: flex; /* centra il video dentro */
+        align-items: center;
+        justify-content: center;
         box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.7),
           0 0 18px rgba(37, 99, 235, 0.6);
       }
@@ -313,7 +319,10 @@
       #remoteVideo {
         width: 100%;
         height: 100%;
+        max-width: 100%;
+        max-height: 100%;
         object-fit: cover;
+        object-position: center center;
         background: #000;
         display: block;
       }
@@ -322,15 +331,36 @@
         position: absolute;
         bottom: 10px;
         right: 10px;
-        width: 28%;
-        max-width: 220px;
+        width: 26%;
+        max-width: 200px;
         aspect-ratio: 16 / 9;
         border-radius: 10px;
         border: 1px solid rgba(148, 163, 184, 0.8);
         box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8),
           0 0 15px rgba(0, 0, 0, 0.9);
         object-fit: cover;
+        object-position: center center;
         background: #000;
+      }
+
+      /* CONTENITORE JITSI CONFERENZA */
+
+      #jitsi-container {
+        display: none; /* mostrato solo quando conferenza ON */
+        padding: 0 16px 10px;
+        background: #020617;
+        flex-shrink: 0;
+      }
+
+      #jitsi-wrapper {
+        width: 100%;
+        max-width: 900px;
+        height: 420px;
+        margin: 0 auto 4px auto;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.7),
+          0 0 18px rgba(37, 99, 235, 0.6);
       }
 
       /* CHAT MESSAGGI */
@@ -636,6 +666,11 @@
               </div>
             </div>
 
+            <!-- Contenitore conferenza Jitsi -->
+            <div id="jitsi-container">
+              <div id="jitsi-wrapper"></div>
+            </div>
+
             <div id="chat"></div>
             <div id="composer">
               <div id="input-bar">
@@ -657,6 +692,8 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
+    <!-- Script Jitsi IFrame API -->
+    <script src="https://meet.jit.si/external_api.js"></script>
     <script src="app.js"></script>
 
     <script>

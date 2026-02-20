@@ -22,6 +22,11 @@ let videoArea = null;
 let currentCallPeerEmail = null; // email del contatto con cui sei in chiamata
 let ringtoneAudio = null; // campanella
 
+// ---- JITSI CONFERENZA ----
+let jitsiApi = null;
+const JITSI_DOMAIN = "meet.jit.si";
+const JITSI_ROOM = "ZEUS-CONFERENZA-GLOBALE";
+
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
@@ -48,6 +53,10 @@ const videoCallBtn = document.getElementById("video-call-btn");
 videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
+
+// elementi Jitsi
+const jitsiContainer = document.getElementById("jitsi-container");
+const jitsiWrapper = document.getElementById("jitsi-wrapper");
 
 // ---- pannello log tecnico separato ----
 let callLogDiv = document.getElementById("call-log");
@@ -149,7 +158,7 @@ function updateChatHeader() {
   if (!chatTitleText) return;
 
   if (isConference) {
-    chatTitleText.textContent = "Conferenza globale";
+    chatTitleText.textContent = "Conferenza globale (Jitsi)";
   } else {
     if (selectedContactEmail) {
       chatTitleText.textContent = `Chat privata/chiamata con: ${selectedContactEmail}`;
@@ -160,9 +169,77 @@ function updateChatHeader() {
   }
 }
 
+// ---- GESTIONE JITSI ----
+function startConference() {
+  if (!jitsiWrapper || typeof JitsiMeetExternalAPI === "undefined") {
+    appendSystemMessage(
+      "Impossibile avviare la conferenza: API Jitsi non disponibile."
+    );
+    return;
+  }
+
+  // se esiste un'istanza precedente, distruggila
+  if (jitsiApi) {
+    try {
+      jitsiApi.dispose();
+    } catch (e) {
+      console.warn("Errore dispose Jitsi API:", e);
+    }
+    jitsiApi = null;
+  }
+
+  const userName =
+    (currentUser && (currentUser.name || currentUser.email)) ||
+    "Utente ZEUS";
+
+  const options = {
+    roomName: JITSI_ROOM,
+    parentNode: jitsiWrapper,
+    width: "100%",
+    height: "100%",
+    interfaceConfigOverwrite: {
+      // interfaccia standard, lasciamo quasi tutto di default
+    },
+    userInfo: {
+      displayName: userName,
+    },
+  };
+
+  jitsiApi = new JitsiMeetExternalAPI(JITSI_DOMAIN, options);
+  if (jitsiContainer) {
+    jitsiContainer.style.display = "block";
+  }
+  appendSystemMessage(
+    "Conferenza Jitsi avviata (stanza globale ZEUS-CONFERENZA-GLOBALE)."
+  );
+}
+
+function stopConference() {
+  if (jitsiApi) {
+    try {
+      jitsiApi.dispose();
+    } catch (e) {
+      console.warn("Errore dispose Jitsi API:", e);
+    }
+    jitsiApi = null;
+  }
+  if (jitsiContainer) {
+    jitsiContainer.style.display = "none";
+  }
+  appendSystemMessage("Conferenza Jitsi chiusa.");
+}
+
 // toggle conferenza
 conferenceBtn.addEventListener("click", () => {
   isConference = !isConference;
+
+  if (isConference) {
+    stopConference(); // pulizia eventuale
+    startConference();
+  } else {
+    stopConference();
+  }
+
   updateChatHeader();
 });
 
@@ -300,6 +377,68 @@ input.addEventListener("keypress", (e) => {
   }
 });
 
+// ---- WAV ENCODER (PCM 16-bit mono, 44.1 kHz) ----
+function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
+  const numChannels = 1;
+  const numSamples = float32Array.length;
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = numSamples * bytesPerSample;
+
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  function writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+
+  let offset = 0;
+
+  // RIFF header
+  writeString(view, offset, "RIFF");
+  offset += 4;
+  view.setUint32(offset, 36 + dataSize, true);
+  offset += 4;
+  writeString(view, offset, "WAVE");
+  offset += 4;
+
+  // fmt subchunk
+  writeString(view, offset, "fmt ");
+  offset += 4;
+  view.setUint32(offset, 16, true);
+  offset += 4;
+  view.setUint16(offset, 1, true); // PCM
+  offset += 2;
+  view.setUint16(offset, numChannels, true);
+  offset += 2;
+  view.setUint32(offset, sampleRate, true);
+  offset += 4;
+  view.setUint32(offset, byteRate, true);
+  offset += 4;
+  view.setUint16(offset, blockAlign, true);
+  offset += 2;
+  view.setUint16(offset, bytesPerSample * 8, true);
+  offset += 2;
+
+  // data subchunk
+  writeString(view, offset, "data");
+  offset += 4;
+  view.setUint32(offset, dataSize, true);
+  offset += 4;
+
+  // samples
+  for (let i = 0; i < numSamples; i++, offset += 2) {
+    let s = Math.max(-1, Math.min(1, float32Array[i]));
+    s = s < 0 ? s * 0x8000 : s * 0x7fff;
+    view.setInt16(offset, s, true);
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 // ---- GESTIONE MESSAGGI VOCALI (CLIENT) ----
 async function startRecording() {
   if (isRecording) return;
@@ -340,12 +479,30 @@ async function startRecording() {
       appendSystemMessage("Errore durante la registrazione vocale.");
     };
 
-    mediaRecorder.onstop = () => {
+    mediaRecorder.onstop = async () => {
       if (!audioChunks.length) {
         appendSystemMessage("Nessun audio registrato.");
       } else {
-        const blob = new Blob(audioChunks);
-        sendVoiceMessage(blob);
+        try {
+          const blob = new Blob(audioChunks);
+          const arrayBuffer = await blob.arrayBuffer();
+          const audioContext = new (window.AudioContext ||
+            window.webkitAudioContext)();
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+          const channelData = audioBuffer.getChannelData(0);
+          const wavBlob = encodeWAVFromFloat32(
+            channelData,
+            audioBuffer.sampleRate || 44100
+          );
+
+          sendVoiceMessage(wavBlob);
+        } catch (err) {
+          console.error("Errore conversione in WAV:", err);
+          appendSystemMessage(
+            "Errore durante la conversione del messaggio vocale in WAV."
+          );
+        }
       }
       audioChunks = [];
       stream.getTracks().forEach((t) => t.stop());
@@ -372,7 +529,7 @@ function sendVoiceMessage(blob) {
 
   const reader = new FileReader();
   reader.onloadend = () => {
-    const base64data = reader.result;
+    const base64data = reader.result; // data:audio/wav;base64,...
 
     if (isConference) {
       socket.emit("voice-message", {
