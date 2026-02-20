@@ -541,6 +541,21 @@
 
       /* MOBILE: stessa struttura del tablet, tutto full-width adattabile */
       @media (max-width: 640px) {
+        body {
+          padding: 0;
+          min-height: 100vh;
+          min-height: 100dvh;
+        }
+
+        #app-shell {
+          max-width: 100%;
+          max-height: none;
+          height: 100%;
+          border-radius: 0;
+          border-left: none;
+          border-right: none;
+        }
+
         header {
           padding-inline: 12px;
           font-size: 14px;
