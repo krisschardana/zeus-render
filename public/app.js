@@ -8,7 +8,6 @@ const onlineUsers = {}; // email -> true/false
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
-// tolgo il blocco rigido sul mime, mantengo la variabile ma non la uso per disabilitare
 let supportedAudioMimeType = null; // informativo, non blocca più il tasto
 
 // ---- STATO CHIAMATA (WEBRTC) ----
@@ -108,7 +107,6 @@ function initAudioMimeType() {
     appendSystemMessage(
       "Questo browser non supporta la registrazione vocale (MediaRecorder assente)."
     );
-    // qui NON disabilito il tasto, lascio comunque provare
     return;
   }
 
@@ -317,7 +315,6 @@ async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
     try {
-      // Se abbiamo trovato un tipo preferito, lo usiamo, altrimenti lasciamo default
       if (supportedAudioMimeType) {
         mediaRecorder = new MediaRecorder(stream, {
           mimeType: supportedAudioMimeType,
@@ -347,7 +344,6 @@ async function startRecording() {
       if (!audioChunks.length) {
         appendSystemMessage("Nessun audio registrato.");
       } else {
-        // Lasciamo il tipo al browser, non forziamo mime
         const blob = new Blob(audioChunks);
         sendVoiceMessage(blob);
       }
@@ -793,8 +789,6 @@ window.initZeusApp = function (user) {
     return;
   }
 
-  // il login/viste è già gestito da index.html (mostra #app, nasconde #login)
-  // qui assicuriamo solo che header/chat siano inizializzati
   showApp();
 
   socket.emit("set-user", currentUser);
