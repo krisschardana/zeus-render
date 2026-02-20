@@ -1,16 +1,15 @@
 const socket = io();
 let currentUser = null;
 let selectedContactEmail = null;
-let isConference = false;
-const onlineUsers = {}; // email -> true/false
+let onlineUsers = {}; // email -> true/false
 
 // ---- AUDIO / MESSAGGI VOCALI ----
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
-let supportedAudioMimeType = null; // informativo, non blocca più il tasto
+let supportedAudioMimeType = null;
 
-// ---- STATO CHIAMATA (WEBRTC) ----
+// ---- STATO CHIAMATA (WEBRTC 1-a-1) ----
 let isAudioCallActive = false;
 let isVideoCallActive = false;
 let peerConnection = null;
@@ -19,19 +18,14 @@ let remoteAudioElement = null;
 let localVideoElement = null;
 let remoteVideoElement = null;
 let videoArea = null;
-let currentCallPeerEmail = null; // email del contatto con cui sei in chiamata
-let ringtoneAudio = null; // campanella
-
-// ---- JITSI CONFERENZA ----
-let jitsiApi = null;
-const JITSI_DOMAIN = "meet.jit.si";
-const JITSI_ROOM = "ZEUS-CONFERENZA-GLOBALE";
+let currentCallPeerEmail = null;
+let ringtoneAudio = null;
 
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
-// elementi DOM
+// elementi DOM principali
 const loginView = document.getElementById("login");
 const appView = document.getElementById("app");
 const nameInput = document.getElementById("name");
@@ -49,16 +43,12 @@ const chatTitleText = document.getElementById("chat-title-text");
 const audioCallBtn = document.getElementById("audio-call-btn");
 const videoCallBtn = document.getElementById("video-call-btn");
 
-// elementi video
+// video
 videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
 
-// elementi Jitsi
-const jitsiContainer = document.getElementById("jitsi-container");
-const jitsiWrapper = document.getElementById("jitsi-wrapper");
-
-// ---- pannello log tecnico separato ----
+// pannello log tecnico
 let callLogDiv = document.getElementById("call-log");
 if (!callLogDiv) {
   callLogDiv = document.createElement("div");
@@ -77,7 +67,7 @@ if (!callLogDiv) {
   }
 }
 
-// ---- grafica bottoni ----
+// grafica bottoni audio/video
 if (audioCallBtn) {
   audioCallBtn.textContent = "";
 }
@@ -85,7 +75,7 @@ if (videoCallBtn) {
   videoCallBtn.textContent = "";
 }
 
-// bottone conferenza
+// bottone conferenza (placeholder, nessuna conferenza attiva)
 const conferenceBtn = document.createElement("button");
 conferenceBtn.id = "conference-toggle";
 conferenceBtn.textContent = "";
@@ -107,10 +97,18 @@ window.addEventListener("DOMContentLoaded", () => {
   if (inputBar) {
     inputBar.appendChild(micBtn);
   }
-  initAudioMimeType(); // solo log, non blocca il tasto
+  initAudioMimeType();
 });
 
-// ---- scelta formato audio compatibile (solo informativa, non blocca più) ----
+// placeholder conferenza: solo messaggio, niente integrazione esterna
+conferenceBtn.addEventListener("click", () => {
+  appendSystemMessage(
+    "Funzione conferenza globale in sviluppo. La versione attuale di ZEUS supporta chat privata, vocali e chiamate 1-a-1."
+  );
+  updateChatHeader();
+});
+
+// ---- scelta formato audio (solo informativo) ----
 function initAudioMimeType() {
   if (typeof MediaRecorder === "undefined") {
     appendSystemMessage(
@@ -141,7 +139,7 @@ function initAudioMimeType() {
   );
 }
 
-// funzioni vista (usate solo come utilità, non per il login principale)
+// ---- vista app ----
 function showLogin() {
   if (loginView) loginView.style.display = "flex";
   if (appView) appView.style.display = "none";
@@ -153,97 +151,17 @@ function showApp() {
   updateChatHeader();
 }
 
-// header
 function updateChatHeader() {
   if (!chatTitleText) return;
-
-  if (isConference) {
-    chatTitleText.textContent = "Conferenza globale (Jitsi)";
+  if (selectedContactEmail) {
+    chatTitleText.textContent = `Chat privata/chiamata con: ${selectedContactEmail}`;
   } else {
-    if (selectedContactEmail) {
-      chatTitleText.textContent = `Chat privata/chiamata con: ${selectedContactEmail}`;
-    } else {
-      chatTitleText.textContent =
-        "Seleziona un contatto per iniziare una chat privata (le chiamate in arrivo funzionano anche senza selezione).";
-    }
+    chatTitleText.textContent =
+      "Seleziona un contatto per iniziare una chat privata (le chiamate in arrivo funzionano anche senza selezione).";
   }
 }
 
-// ---- GESTIONE JITSI ----
-function startConference() {
-  if (!jitsiWrapper || typeof JitsiMeetExternalAPI === "undefined") {
-    appendSystemMessage(
-      "Impossibile avviare la conferenza: API Jitsi non disponibile."
-    );
-    return;
-  }
-
-  // se esiste un'istanza precedente, distruggila
-  if (jitsiApi) {
-    try {
-      jitsiApi.dispose();
-    } catch (e) {
-      console.warn("Errore dispose Jitsi API:", e);
-    }
-    jitsiApi = null;
-  }
-
-  const userName =
-    (currentUser && (currentUser.name || currentUser.email)) ||
-    "Utente ZEUS";
-
-  const options = {
-    roomName: JITSI_ROOM,
-    parentNode: jitsiWrapper,
-    width: "100%",
-    height: "100%",
-    interfaceConfigOverwrite: {
-      // interfaccia standard, lasciamo quasi tutto di default
-    },
-    userInfo: {
-      displayName: userName,
-    },
-  };
-
-  jitsiApi = new JitsiMeetExternalAPI(JITSI_DOMAIN, options);
-  if (jitsiContainer) {
-    jitsiContainer.style.display = "block";
-  }
-  appendSystemMessage(
-    "Conferenza Jitsi avviata (stanza globale ZEUS-CONFERENZA-GLOBALE)."
-  );
-}
-
-function stopConference() {
-  if (jitsiApi) {
-    try {
-      jitsiApi.dispose();
-    } catch (e) {
-      console.warn("Errore dispose Jitsi API:", e);
-    }
-    jitsiApi = null;
-  }
-  if (jitsiContainer) {
-    jitsiContainer.style.display = "none";
-  }
-  appendSystemMessage("Conferenza Jitsi chiusa.");
-}
-
-// toggle conferenza
-conferenceBtn.addEventListener("click", () => {
-  isConference = !isConference;
-
-  if (isConference) {
-    stopConference(); // pulizia eventuale
-    startConference();
-  } else {
-    stopConference();
-  }
-
-  updateChatHeader();
-});
-
-// carica lista utenti con pallino online
+// ---- RUBRICA + SELEZIONE CONTATTO ----
 async function loadUsers() {
   try {
     const res = await fetch("/api/users");
@@ -316,7 +234,7 @@ socket.on("user-offline", (user) => {
   loadUsers();
 });
 
-// messaggi conferenza (testo)
+// ---- CHAT TESTO ----
 socket.on("chat-message", (msg) => {
   const div = document.createElement("div");
   div.classList.add("msg");
@@ -331,7 +249,6 @@ socket.on("chat-message", (msg) => {
   chatDiv.scrollTop = chatDiv.scrollHeight;
 });
 
-// messaggi privati (testo)
 socket.on("private-message", (msg) => {
   const div = document.createElement("div");
   div.classList.add("msg");
@@ -346,27 +263,23 @@ socket.on("private-message", (msg) => {
   chatDiv.scrollTop = chatDiv.scrollHeight;
 });
 
-// invio testo
+// invio testo: SEMPRE come prima, solo chat privata
 sendBtn.addEventListener("click", () => {
   const text = input.value.trim();
   if (!text || !currentUser) return;
 
-  if (isConference) {
-    socket.emit("chat-message", text);
-  } else {
-    if (!selectedContactEmail) {
-      appendSystemMessage(
-        "Seleziona un contatto per inviare un messaggio privato."
-      );
-      input.value = "";
-      return;
-    }
-
-    socket.emit("private-message", {
-      toEmail: selectedContactEmail,
-      text,
-    });
+  if (!selectedContactEmail) {
+    appendSystemMessage(
+      "Seleziona un contatto per inviare un messaggio privato."
+    );
+    input.value = "";
+    return;
   }
+
+  socket.emit("private-message", {
+    toEmail: selectedContactEmail,
+    text,
+  });
 
   input.value = "";
 });
@@ -377,7 +290,7 @@ input.addEventListener("keypress", (e) => {
   }
 });
 
-// ---- WAV ENCODER (PCM 16-bit mono, 44.1 kHz) ----
+// ---- WAV ENCODER ----
 function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
   const numChannels = 1;
   const numSamples = float32Array.length;
@@ -397,7 +310,6 @@ function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
 
   let offset = 0;
 
-  // RIFF header
   writeString(view, offset, "RIFF");
   offset += 4;
   view.setUint32(offset, 36 + dataSize, true);
@@ -405,12 +317,11 @@ function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
   writeString(view, offset, "WAVE");
   offset += 4;
 
-  // fmt subchunk
   writeString(view, offset, "fmt ");
   offset += 4;
   view.setUint32(offset, 16, true);
   offset += 4;
-  view.setUint16(offset, 1, true); // PCM
+  view.setUint16(offset, 1, true);
   offset += 2;
   view.setUint16(offset, numChannels, true);
   offset += 2;
@@ -423,13 +334,11 @@ function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
   view.setUint16(offset, bytesPerSample * 8, true);
   offset += 2;
 
-  // data subchunk
   writeString(view, offset, "data");
   offset += 4;
   view.setUint32(offset, dataSize, true);
   offset += 4;
 
-  // samples
   for (let i = 0; i < numSamples; i++, offset += 2) {
     let s = Math.max(-1, Math.min(1, float32Array[i]));
     s = s < 0 ? s * 0x8000 : s * 0x7fff;
@@ -439,7 +348,7 @@ function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-// ---- GESTIONE MESSAGGI VOCALI (CLIENT) ----
+// ---- MESSAGGI VOCALI ----
 async function startRecording() {
   if (isRecording) return;
 
@@ -529,26 +438,20 @@ function sendVoiceMessage(blob) {
 
   const reader = new FileReader();
   reader.onloadend = () => {
-    const base64data = reader.result; // data:audio/wav;base64,...
+    const base64data = reader.result;
 
-    if (isConference) {
-      socket.emit("voice-message", {
-        mode: "conference",
-        audio: base64data,
-      });
-    } else {
-      if (!selectedContactEmail) {
-        appendSystemMessage(
-          "Seleziona un contatto per inviare un messaggio vocale privato."
-        );
-        return;
-      }
-      socket.emit("voice-message", {
-        mode: "private",
-        toEmail: selectedContactEmail,
-        audio: base64data,
-      });
+    if (!selectedContactEmail) {
+      appendSystemMessage(
+        "Seleziona un contatto per inviare un messaggio vocale privato."
+      );
+      return;
     }
+
+    socket.emit("voice-message", {
+      mode: "private",
+      toEmail: selectedContactEmail,
+      audio: base64data,
+    });
   };
   reader.readAsDataURL(blob);
 }
@@ -565,7 +468,6 @@ micBtn.addEventListener("mouseleave", () => {
   }
 });
 
-// ricezione messaggi vocali
 socket.on("voice-message", (msg) => {
   const div = document.createElement("div");
   div.classList.add("msg");
@@ -577,10 +479,7 @@ socket.on("voice-message", (msg) => {
   }
 
   const label = document.createElement("div");
-  label.textContent =
-    msg.mode === "conference"
-      ? `[CONFERENZA] messaggio vocale da ${msg.from.name}`
-      : `(privato) messaggio vocale da ${msg.from.name}`;
+  label.textContent = `(privato) messaggio vocale da ${msg.from.name}`;
   div.appendChild(label);
 
   const audio = document.createElement("audio");
@@ -597,7 +496,7 @@ socket.on("voice-message", (msg) => {
   chatDiv.scrollTop = chatDiv.scrollHeight;
 });
 
-// ---- FUNZIONI UTILI ----
+// ---- LOG UTENTE ----
 function appendSystemMessage(text) {
   const div = document.createElement("div");
   div.classList.add("msg");
@@ -620,7 +519,7 @@ function clearCallLogIfTooLong() {
   }
 }
 
-// ---- WEBRTC: AUDIO E VIDEO ----
+// ---- WEBRTC AUDIO/VIDEO 1-a-1 ----
 async function startLocalAudio() {
   if (localStream) return localStream;
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -669,16 +568,10 @@ function createPeerConnection(targetEmail) {
   return peerConnection;
 }
 
-// ---- CHIAMATA AUDIO ----
+// chiamata audio
 async function startAudioCall() {
   if (!selectedContactEmail) {
     appendSystemMessage("Seleziona un contatto per iniziare una chiamata audio.");
-    return;
-  }
-  if (isConference) {
-    appendSystemMessage(
-      "Per ora la chiamata audio è solo 1-a-1, non conferenza."
-    );
     return;
   }
 
@@ -760,16 +653,10 @@ if (audioCallBtn) {
   });
 }
 
-// ---- VIDEOCHIAMATA ----
+// videochiamata
 async function startVideoCall() {
   if (!selectedContactEmail) {
     appendSystemMessage("Seleziona un contatto per iniziare una videochiamata.");
-    return;
-  }
-  if (isConference) {
-    appendSystemMessage(
-      "Per ora la videochiamata è solo 1-a-1, non conferenza."
-    );
     return;
   }
 
@@ -820,7 +707,7 @@ if (videoCallBtn) {
   });
 }
 
-// ---- SEGNALAZIONE: OFFER/ANSWER/ICE ----
+// ---- SEGNALAZIONE CHIAMATE ----
 socket.on("call-offer", async ({ from, offer, mode }) => {
   if (!from || !from.email || !offer) {
     appendSystemMessage("Offerta di chiamata non valida.");
@@ -938,7 +825,7 @@ socket.on("call-reject", ({ from }) => {
   endCall(`Chiamata rifiutata da ${from?.email || "remote"}.`);
 });
 
-// ---- BOOTSTRAP DOPO LOGIN: USATA DA index.html ----
+// ---- BOOTSTRAP DOPO LOGIN ----
 window.initZeusApp = function (user) {
   currentUser = user || null;
   if (!currentUser || !currentUser.email) {

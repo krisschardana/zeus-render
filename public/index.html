@@ -73,7 +73,7 @@
         display: none;
       }
 
-      /* LAYOUT 2 COLONNE: solo RUBRICA + CHAT, niente colonna extra */
+      /* LAYOUT 2 COLONNE: solo RUBRICA + CHAT */
       #layout {
         display: flex;
         flex: 1;
@@ -99,7 +99,6 @@
         flex-direction: column;
       }
 
-      /* intestazione ZEUS CHAT dentro la colonna rubrica */
       #contacts-header {
         font-size: 16px;
         font-weight: 600;
@@ -296,7 +295,7 @@
         background: radial-gradient(circle at top, #020617 0%, #000000 80%);
         gap: 10px;
         align-items: center;
-        justify-content: center; /* centra il wrapper orizzontalmente */
+        justify-content: center;
         flex-shrink: 0;
       }
 
@@ -305,11 +304,11 @@
         width: 100%;
         max-width: 640px;
         max-height: 360px;
-        margin: 0 auto; /* centrato nel container */
+        margin: 0 auto;
         background: #000;
         border-radius: 12px;
         overflow: hidden;
-        display: flex; /* centra il video dentro */
+        display: flex;
         align-items: center;
         justify-content: center;
         box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.7),
@@ -341,26 +340,6 @@
         object-fit: cover;
         object-position: center center;
         background: #000;
-      }
-
-      /* CONTENITORE JITSI CONFERENZA */
-
-      #jitsi-container {
-        display: none; /* mostrato solo quando conferenza ON */
-        padding: 0 16px 10px;
-        background: #020617;
-        flex-shrink: 0;
-      }
-
-      #jitsi-wrapper {
-        width: 100%;
-        max-width: 900px;
-        height: 420px;
-        margin: 0 auto 4px auto;
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.7),
-          0 0 18px rgba(37, 99, 235, 0.6);
       }
 
       /* CHAT MESSAGGI */
@@ -540,7 +519,7 @@
         font-size: 12px;
       }
 
-      /* TABLET: layout a colonna, rubrica sopra, chat sotto */
+      /* TABLET */
       @media (max-width: 900px) {
         body {
           padding: 0;
@@ -572,7 +551,7 @@
         }
       }
 
-      /* MOBILE: ancora struttura a colonna, adattata a schermi piccoli */
+      /* MOBILE */
       @media (max-width: 640px) {
         body {
           padding: 0;
@@ -657,6 +636,7 @@
               </span>
               <button id="audio-call-btn" class="icon-btn"></button>
               <button id="video-call-btn" class="icon-btn"></button>
+              <!-- il bottone conferenza viene aggiunto da app.js -->
             </div>
 
             <div id="video-area">
@@ -664,11 +644,6 @@
                 <video id="remoteVideo" autoplay playsinline></video>
                 <video id="localVideo" autoplay muted playsinline></video>
               </div>
-            </div>
-
-            <!-- Contenitore conferenza Jitsi -->
-            <div id="jitsi-container">
-              <div id="jitsi-wrapper"></div>
             </div>
 
             <div id="chat"></div>
@@ -692,8 +667,7 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <!-- Script Jitsi IFrame API -->
-    <script src="https://meet.jit.si/external_api.js"></script>
+    <!-- rimosso script Jitsi -->
     <script src="app.js"></script>
 
     <script>
