@@ -81,7 +81,9 @@ if (videoCallBtn) {
 const conferenceBtn = document.createElement("button");
 conferenceBtn.id = "conference-toggle";
 conferenceBtn.textContent = "";
-chatHeader.appendChild(conferenceBtn);
+if (chatHeader) {
+  chatHeader.appendChild(conferenceBtn);
+}
 
 // bottone microfono (messaggi vocali)
 const micBtn = document.createElement("button");
@@ -132,7 +134,7 @@ function initAudioMimeType() {
   );
 }
 
-// funzioni vista
+// funzioni vista (usate solo come utilità, non per il login principale)
 function showLogin() {
   if (loginView) loginView.style.display = "flex";
   if (appView) appView.style.display = "none";
@@ -164,46 +166,6 @@ function updateChatHeader() {
 conferenceBtn.addEventListener("click", () => {
   isConference = !isConference;
   updateChatHeader();
-});
-
-// ---- LOGIN SEMPLICE (senza OTP) ----
-loginBtn.addEventListener("click", async () => {
-  const name = nameInput.value.trim();
-  const email = emailInput.value.trim();
-  if (!name || !email) {
-    errorDiv.textContent = "Nome ed email sono obbligatori.";
-    return;
-  }
-
-  errorDiv.textContent = "Accesso in corso...";
-  loginBtn.disabled = true;
-  loginBtn.textContent = "Accesso in corso...";
-
-  try {
-    const res = await fetch("/api/login-request", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email }),
-    });
-    const data = await res.json();
-
-    if (!data.ok) {
-      errorDiv.textContent = data.error || "Errore di accesso.";
-      return;
-    }
-
-    currentUser = data.user;
-    socket.emit("set-user", currentUser);
-    errorDiv.textContent = "";
-    showApp();
-    loadUsers();
-  } catch (err) {
-    console.error("Errore login", err);
-    errorDiv.textContent = "Errore di rete durante l'accesso.";
-  } finally {
-    loginBtn.disabled = false;
-    loginBtn.textContent = "Entra";
-  }
 });
 
 // carica lista utenti con pallino online
@@ -823,5 +785,18 @@ socket.on("call-reject", ({ from }) => {
   endCall(`Chiamata rifiutata da ${from?.email || "remote"}.`);
 });
 
-// avvio
-showLogin();
+// ---- BOOTSTRAP DOPO LOGIN: USATA DA index.html ----
+window.initZeusApp = function (user) {
+  currentUser = user || null;
+  if (!currentUser || !currentUser.email) {
+    appendSystemMessage("Utente non valido dopo il login.");
+    return;
+  }
+
+  // il login/viste è già gestito da index.html (mostra #app, nasconde #login)
+  // qui assicuriamo solo che header/chat siano inizializzati
+  showApp();
+
+  socket.emit("set-user", currentUser);
+  loadUsers();
+};

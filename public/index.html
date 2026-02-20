@@ -48,8 +48,6 @@
         color: var(--text-primary);
         padding: 8px;
         overflow: auto;
-        /* TEST VISIVO PER CAPIRE SE QUESTO FILE È SERVITO DA RENDER */
-        border: 5px solid red;
       }
 
       /* contenitore principale */
@@ -75,38 +73,14 @@
         display: none;
       }
 
-      header {
-        padding: 10px 18px;
-        background: linear-gradient(
-          90deg,
-          #020617 0%,
-          #020617 40%,
-          #0b1120 100%
-        );
-        font-weight: 600;
-        font-size: 16px;
-        letter-spacing: 0.04em;
-        border-bottom: 1px solid rgba(37, 99, 235, 0.4);
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-shrink: 0;
-      }
-
-      header::before {
-        content: "⚡";
-        color: var(--accent-blue-glow);
-        text-shadow: 0 0 8px rgba(59, 130, 246, 0.8);
-      }
-
-      /* LAYOUT 2 COLONNE: sidebar contatti + area chat */
+      /* LAYOUT 2 COLONNE: solo RUBRICA + CHAT, niente colonna extra */
       #layout {
         display: flex;
         flex: 1;
         min-height: 0;
       }
 
-      /* SIDEBAR CONTATTI */
+      /* COLONNA RUBRICA CONTATTI (SINISTRA) */
 
       #contacts {
         width: 260px;
@@ -121,6 +95,29 @@
         box-sizing: border-box;
         overflow-y: auto;
         flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* intestazione ZEUS CHAT dentro la colonna rubrica */
+      #contacts-header {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin: 0 0 10px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #contacts-header::before {
+        content: "⚡";
+        color: var(--accent-blue-glow);
+        text-shadow: 0 0 8px rgba(59, 130, 246, 0.8);
+      }
+
+      #contacts-header span {
+        text-transform: uppercase;
       }
 
       #contacts h2 {
@@ -130,6 +127,11 @@
         letter-spacing: 0.08em;
         color: var(--text-muted);
         flex-shrink: 0;
+      }
+
+      #contacts-list {
+        flex: 1;
+        overflow-y: auto;
       }
 
       .contact {
@@ -175,7 +177,7 @@
         color: var(--text-muted);
       }
 
-      /* AREA CHAT */
+      /* AREA CHAT (DESTRA) */
 
       #chat-area {
         flex: 1;
@@ -285,7 +287,7 @@
         filter: brightness(1.1);
       }
 
-      /* AREA VIDEO UNICA */
+      /* AREA VIDEO */
 
       #video-area {
         display: none;
@@ -331,7 +333,8 @@
         background: #000;
       }
 
-      /* CHAT: unico elemento scrollabile dell'app */
+      /* CHAT MESSAGGI */
+
       #chat {
         flex: 1;
         overflow-y: auto;
@@ -507,7 +510,7 @@
         font-size: 12px;
       }
 
-      /* TABLET: layout a colonna, header in alto, poi contatti, poi chat */
+      /* TABLET: layout a colonna, rubrica sopra, chat sotto */
       @media (max-width: 900px) {
         body {
           padding: 0;
@@ -528,21 +531,18 @@
 
         #contacts {
           width: 100%;
-          max-height: 180px;
+          max-height: 220px;
           height: auto;
           border-right: none;
           border-bottom: 1px solid var(--border-subtle);
-          display: flex;
-          flex-direction: column;
         }
 
         #contacts-list {
-          flex: 1;
-          overflow-y: auto;
+          max-height: 160px;
         }
       }
 
-      /* MOBILE: stessa struttura del tablet, tutto full-width adattabile */
+      /* MOBILE: ancora struttura a colonna, adattata a schermi piccoli */
       @media (max-width: 640px) {
         body {
           padding: 0;
@@ -557,6 +557,10 @@
           border-radius: 0;
           border-left: none;
           border-right: none;
+        }
+
+        #contacts-header {
+          font-size: 14px;
         }
 
         header {
@@ -609,12 +613,13 @@
       </div>
 
       <div id="app">
-        <header>ZEUS CHAT</header>
         <div id="layout">
           <div id="contacts">
+            <div id="contacts-header"><span>ZEUS CHAT</span></div>
             <h2>Contatti</h2>
             <div id="contacts-list"></div>
           </div>
+
           <div id="chat-area">
             <div id="chat-header">
               <span id="chat-title-text">
