@@ -36,7 +36,7 @@
           sans-serif;
         display: flex;
         justify-content: center;
-        align-items: center;
+        align-items: stretch;
         min-height: 100vh;
         min-height: 100dvh;
         background: radial-gradient(
@@ -47,7 +47,7 @@
         );
         color: var(--text-primary);
         padding: 8px;
-        overflow: hidden; /* blocca lo scroll della pagina, scorre solo la chat */
+        overflow: auto; /* permettiamo lo scroll verticale della pagina */
       }
 
       /* contenitore principale */
@@ -506,6 +506,10 @@
 
       /* TABLET */
       @media (max-width: 900px) {
+        body {
+          padding: 4px;
+        }
+
         #layout {
           flex-direction: column;
         }

@@ -8,7 +8,8 @@ const onlineUsers = {}; // email -> true/false
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
-let supportedAudioMimeType = null; // per scegliere un formato compatibile
+// tolgo il blocco rigido sul mime, mantengo la variabile ma non la uso per disabilitare
+let supportedAudioMimeType = null; // informativo, non blocca più il tasto
 
 // ---- STATO CHIAMATA (WEBRTC) ----
 let isAudioCallActive = false;
@@ -96,22 +97,19 @@ window.addEventListener("DOMContentLoaded", () => {
   if (inputBar) {
     inputBar.appendChild(micBtn);
   }
-  initAudioMimeType(); // determina il formato audio supportato per i vocali
+  initAudioMimeType(); // solo log, non blocca il tasto
 });
 
-// ---- scelta formato audio compatibile ----
+// ---- scelta formato audio compatibile (solo informativa, non blocca più) ----
 function initAudioMimeType() {
-  // se MediaRecorder non esiste (vecchi browser), disattiviamo il tasto
   if (typeof MediaRecorder === "undefined") {
     appendSystemMessage(
       "Questo browser non supporta la registrazione vocale (MediaRecorder assente)."
     );
-    micBtn.disabled = true;
-    micBtn.title = "Registrazione vocale non supportata su questo dispositivo.";
+    // qui NON disabilito il tasto, lascio comunque provare
     return;
   }
 
-  // Ordine di prova: webm, ogg, mp4 (solo se supportati)
   const candidates = [
     "audio/webm;codecs=opus",
     "audio/webm",
@@ -123,18 +121,15 @@ function initAudioMimeType() {
     if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
       supportedAudioMimeType = type;
       appendSystemMessage(
-        "Formato messaggi vocali: " + supportedAudioMimeType
+        "Formato messaggi vocali preferito: " + supportedAudioMimeType
       );
       return;
     }
   }
 
-  // Nessun formato supportato in modo affidabile
   appendSystemMessage(
-    "Nessun formato audio compatibile trovato per i messaggi vocali. Disabilito il tasto 🎤."
+    "Nessun formato preferito trovato; uso configurazione predefinita del browser per i messaggi vocali."
   );
-  micBtn.disabled = true;
-  micBtn.title = "Messaggi vocali non supportati su questo dispositivo.";
 }
 
 // funzioni vista
@@ -356,19 +351,18 @@ async function startRecording() {
     return;
   }
 
-  if (!supportedAudioMimeType) {
-    appendSystemMessage(
-      "Formato audio per i messaggi vocali non supportato su questo dispositivo."
-    );
-    return;
-  }
-
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
     try {
-      mediaRecorder = new MediaRecorder(stream, {
-        mimeType: supportedAudioMimeType,
-      });
+      // Se abbiamo trovato un tipo preferito, lo usiamo, altrimenti lasciamo default
+      if (supportedAudioMimeType) {
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: supportedAudioMimeType,
+        });
+      } else {
+        mediaRecorder = new MediaRecorder(stream);
+      }
     } catch (e) {
       console.warn("MediaRecorder mimeType non accettato, uso default.", e);
       mediaRecorder = new MediaRecorder(stream);
@@ -391,9 +385,8 @@ async function startRecording() {
       if (!audioChunks.length) {
         appendSystemMessage("Nessun audio registrato.");
       } else {
-        const blob = new Blob(audioChunks, {
-          type: supportedAudioMimeType || "audio/webm",
-        });
+        // Lasciamo il tipo al browser, non forziamo mime
+        const blob = new Blob(audioChunks);
         sendVoiceMessage(blob);
       }
       audioChunks = [];
