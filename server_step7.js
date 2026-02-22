@@ -220,6 +220,21 @@ io.on("connection", (socket) => {
     });
   });
 
+  // ---- INVITI KMEET (CONFERENZA) ----
+  socket.on("kmeet-invite", ({ toEmail, roomUrl }) => {
+    const from = socket.data.user;
+    if (!from || !toEmail || !roomUrl) return;
+
+    const targetSocketId = onlineSocketsByEmail[toEmail];
+    if (!targetSocketId) return;
+
+    io.to(targetSocketId).emit("kmeet-invite", {
+      from,
+      roomUrl,
+      ts: Date.now(),
+    });
+  });
+
   // ---- MESSAGGI VOCALI ----
   socket.on("voice-message", (payload) => {
     const from = socket.data.user;
