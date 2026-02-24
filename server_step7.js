@@ -10,7 +10,9 @@ const path = require("path");
 const { Server } = require("socket.io");
 const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer"); // <-- email (non usata ora)
-const crypto = require("crypto");         // <-- per OTP sicuro (non usato ora)
+const crypto = require("crypto"); // <-- per OTP sicuro (non usato ora)
+const fs = require("fs"); // <-- per persistenza rubrica utenti
+const multer = require("multer"); // <-- per upload file
 
 const app = express();
 const server = http.createServer(app);
@@ -22,7 +24,8 @@ const PORT = process.env.PORT || 8080;
 // modalità test OTP (niente invio SMTP reale)
 // su Render: TEST_MODE può essere "true"/"false", "1"/"0", "yes"/"no"
 const rawTestMode = (process.env.TEST_MODE || "").toString().trim().toLowerCase();
-const TEST_MODE = rawTestMode === "true" || rawTestMode === "1" || rawTestMode === "yes";
+const TEST_MODE =
+  rawTestMode === "true" || rawTestMode === "1" || rawTestMode === "yes";
 
 console.log("Valore TEST_MODE (env):", process.env.TEST_MODE);
 console.log("Valore TEST_MODE (boolean):", TEST_MODE);
@@ -40,9 +43,57 @@ const SMTP_USER = process.env.SMTP_USER || "gnosis@ik.me";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || "ZEUS APP";
 
-// utenti in “database” in memoria
+// percorso file rubrica utenti persistente
+const USERS_DB_PATH = path.join(__dirname, "users.json");
+
+// cartella upload file allegati
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+
+// crea cartella uploads se non esiste
+if (!fs.existsSync(UPLOADS_DIR)) {
+  try {
+    fs.mkdirSync(UPLOADS_DIR);
+    console.log("Cartella uploads creata:", UPLOADS_DIR);
+  } catch (err) {
+    console.error("Errore creazione cartella uploads:", err);
+  }
+}
+
+// utenti in “database” in memoria (verranno caricati da file se esiste)
 // struttura: [{ name, email }]
-const users = [];
+let users = [];
+
+// carica rubrica da file JSON se presente
+function loadUsersFromFile() {
+  try {
+    if (fs.existsSync(USERS_DB_PATH)) {
+      const raw = fs.readFileSync(USERS_DB_PATH, "utf8");
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) {
+        users = data;
+        console.log("Rubrica utenti caricata da file:", users.length, "utenti.");
+      } else {
+        console.warn("users.json non contiene un array, inizializzo rubrica vuota.");
+      }
+    } else {
+      console.log("Nessun users.json trovato, rubrica iniziale vuota.");
+    }
+  } catch (err) {
+    console.error("Errore lettura users.json:", err);
+  }
+}
+
+// salva rubrica su file JSON
+function saveUsersToFile() {
+  try {
+    fs.writeFileSync(USERS_DB_PATH, JSON.stringify(users, null, 2), "utf8");
+  } catch (err) {
+    console.error("Errore salvataggio users.json:", err);
+  }
+}
+
+// carica rubrica all'avvio server
+loadUsersFromFile();
 
 // mappa email -> socket.id (utente online)
 const onlineSocketsByEmail = {};
@@ -51,9 +102,13 @@ const onlineSocketsByEmail = {};
 // { [email]: { code: '123456', expiresAt: 1234567890, name: '...' } }
 const pendingOtps = {};
 
-// middleware
+// middleware base
 app.use(bodyParser.json());
+
+// statici: app frontend
 app.use(express.static(path.join(__dirname, "public")));
+// statici: file caricati (allegati)
+app.use("/uploads", express.static(UPLOADS_DIR)); // es: /uploads/nomefile.jpg restituisce il file
 
 // ---- CONFIGURAZIONE EMAIL (Nodemailer + Infomaniak) ----
 let transporter = null;
@@ -84,6 +139,46 @@ function generateOtp() {
   return crypto.randomInt(100000, 999999).toString();
 }
 
+// ---- CONFIG UPLOAD FILE (multer) ----
+
+// storage su disco: salva i file in uploads/ con timestamp nel nome
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: function (req, file, cb) {
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+    const uniqueName = Date.now() + "-" + safeName;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20 MB max per file
+  },
+});
+
+// API upload: riceve 1 file "file", restituisce URL pubblico
+app.post("/api/upload", upload.single("file"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ ok: false, error: "Nessun file caricato." });
+  }
+
+  // path pubblico servito da /uploads
+  const publicUrl = `/uploads/${req.file.filename}`;
+  console.log("File caricato:", req.file.originalname, "->", publicUrl);
+
+  return res.json({
+    ok: true,
+    url: publicUrl,
+    originalName: req.file.originalname,
+    size: req.file.size,
+    mimeType: req.file.mimetype,
+  });
+});
+
 // ---- API REST EMAIL + OTP ----
 // *** STANDBY OTP ***
 // Ora /api/login-request fa login diretto e NON genera né invia OTP,
@@ -102,6 +197,7 @@ app.post("/api/login-request", async (req, res) => {
   if (!user) {
     user = { name, email };
     users.push(user);
+    saveUsersToFile(); // persistenza rubrica
   }
 
   // se in futuro vorrai riattivare OTP, userai pendingOtps + generateOtp qui.
@@ -147,6 +243,7 @@ app.post("/api/login-verify", (req, res) => {
   if (!user) {
     user = { name, email };
     users.push(user);
+    saveUsersToFile(); // persistenza rubrica
   }
 
   return res.json({ ok: true, user });
@@ -164,6 +261,7 @@ app.post("/api/login", (req, res) => {
   if (!user) {
     user = { name, email };
     users.push(user);
+    saveUsersToFile(); // persistenza rubrica
   }
 
   return res.json({ ok: true, user });
@@ -172,6 +270,28 @@ app.post("/api/login", (req, res) => {
 // lista utenti
 app.get("/api/users", (req, res) => {
   res.json(users);
+});
+
+// elimina utente dalla rubrica (per futuro bottone admin)
+app.delete("/api/users/:email", (req, res) => {
+  const emailParam = (req.params.email || "").trim().toLowerCase();
+  if (!emailParam) {
+    return res.status(400).json({ ok: false, error: "Email mancante." });
+  }
+
+  const before = users.length;
+  users = users.filter(
+    (u) => (u.email || "").trim().toLowerCase() !== emailParam
+  );
+  const after = users.length;
+
+  if (after === before) {
+    return res.json({ ok: false, error: "Utente non trovato in rubrica." });
+  }
+
+  saveUsersToFile();
+  console.log("Utente rimosso dalla rubrica:", emailParam);
+  return res.json({ ok: true });
 });
 
 // ---- SOCKET.IO ----

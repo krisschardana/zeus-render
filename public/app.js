@@ -18,6 +18,15 @@ let audioChunks = [];
 let isRecording = false;
 let supportedAudioMimeType = null;
 
+// ---- VIDEO MESSAGGI (tipo Telegram) ----
+let videoRecorder = null;
+let videoChunks = [];
+let isVideoRecording = false;
+let videoPreviewStream = null;
+const MAX_VIDEO_SECONDS = 30;
+let videoRecordTimeout = null;
+let supportedVideoMimeType = null;
+
 // ---- STATO CHIAMATA (WEBRTC 1-a-1) ----
 let isAudioCallActive = false;
 let isVideoCallActive = false;
@@ -47,12 +56,17 @@ const chatDiv = document.getElementById("chat");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 
+// NUOVI elementi per allegati e video messaggi
+const attachBtn = document.getElementById("attach-btn");
+const fileInput = document.getElementById("file-input");
+const videoNoteBtn = document.getElementById("video-note-btn");
+
 const chatHeader = document.getElementById("chat-header");
 const chatTitleText = document.getElementById("chat-title-text");
 const audioCallBtn = document.getElementById("audio-call-btn");
 const videoCallBtn = document.getElementById("video-call-btn");
 
-// video
+// video area
 videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
@@ -217,7 +231,6 @@ function openKmeet() {
   conferenceIframe.allow =
     "camera; microphone; fullscreen; display-capture; autoplay";
   conferenceIframe.src = KMEET_URL;
-
   conferenceMainArea.appendChild(conferenceIframe);
   isKmeetOn = true;
   if (kmeetToggleBtn) {
@@ -263,7 +276,7 @@ function enterConferenceMode() {
   conferenceMode = true;
 
   ensureConferenceView();
-  rebuildConferenceContacts(); // prende dalla rubrica già piena
+  rebuildConferenceContacts();
 
   if (appView) {
     appView.style.display = "none";
@@ -332,6 +345,7 @@ window.addEventListener("DOMContentLoaded", () => {
     inputBar.appendChild(micBtn);
   }
   initAudioMimeType();
+  initVideoMimeType();
 });
 
 // ---- scelta formato audio ----
@@ -365,6 +379,36 @@ function initAudioMimeType() {
   );
 }
 
+// ---- scelta formato video messaggi ----
+function initVideoMimeType() {
+  if (typeof MediaRecorder === "undefined") {
+    appendSystemMessage(
+      "Questo browser non supporta la registrazione video (MediaRecorder assente)."
+    );
+    return;
+  }
+
+  const candidates = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+  ];
+
+  for (const type of candidates) {
+    if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
+      supportedVideoMimeType = type;
+      appendSystemMessage(
+        "Formato video messaggi preferito: " + supportedVideoMimeType
+      );
+      return;
+    }
+  }
+
+  appendSystemMessage(
+    "Nessun formato video preferito trovato; uso configurazione predefinita del browser per i video messaggi."
+  );
+}
+
 // ---- vista app ----
 function showLogin() {
   if (loginView) loginView.style.display = "flex";
@@ -388,6 +432,33 @@ function updateChatHeader() {
 }
 
 // ---- RUBRICA ZEUS ----
+async function deleteUser(email) {
+  if (!email) return;
+  const ok = confirm(
+    `Vuoi davvero eliminare questo utente dalla rubrica?\n${email}`
+  );
+  if (!ok) return;
+
+  try {
+    const res = await fetch(
+      `/api/users/${encodeURIComponent(email)}`,
+      { method: "DELETE" }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!data.ok) {
+      appendSystemMessage(
+        data.error || `Impossibile eliminare l'utente ${email}.`
+      );
+      return;
+    }
+    appendSystemMessage(`Utente ${email} eliminato dalla rubrica.`);
+    loadUsers();
+  } catch (err) {
+    console.error("Errore DELETE /api/users:", err);
+    appendSystemMessage("Errore durante l'eliminazione utente.");
+  }
+}
+
 async function loadUsers() {
   try {
     const res = await fetch("/api/users");
@@ -398,6 +469,16 @@ async function loadUsers() {
     users.forEach((u) => {
       const div = document.createElement("div");
       div.className = "contact";
+
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.justifyContent = "space-between";
+      row.style.width = "100%";
+
+      const leftBox = document.createElement("div");
+      leftBox.style.display = "flex";
+      leftBox.style.alignItems = "center";
 
       const statusDot = document.createElement("span");
       statusDot.style.display = "inline-block";
@@ -423,8 +504,30 @@ async function loadUsers() {
       textSpan.appendChild(nameSpan);
       textSpan.appendChild(emailSpan);
 
-      div.appendChild(statusDot);
-      div.appendChild(textSpan);
+      leftBox.appendChild(statusDot);
+      leftBox.appendChild(textSpan);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "🗑";
+      deleteBtn.title = "Elimina utente dalla rubrica";
+      deleteBtn.style.fontSize = "11px";
+      deleteBtn.style.padding = "2px 6px";
+      deleteBtn.style.marginLeft = "6px";
+      deleteBtn.style.borderRadius = "999px";
+      deleteBtn.style.border = "none";
+      deleteBtn.style.cursor = "pointer";
+      deleteBtn.style.background = "rgba(239,68,68,0.1)";
+      deleteBtn.style.color = "#f87171";
+
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteUser(u.email);
+      });
+
+      row.appendChild(leftBox);
+      row.appendChild(deleteBtn);
+
+      div.appendChild(row);
 
       div.addEventListener("click", () => {
         selectedContactEmail = u.email;
@@ -439,9 +542,7 @@ async function loadUsers() {
       contactsList.appendChild(div);
     });
 
-    // la conferenza si basa sempre sulla rubrica già renderizzata
     rebuildConferenceContacts();
-
     updateChatHeader();
   } catch (err) {
     console.error("Errore loadUsers", err);
@@ -586,16 +687,68 @@ socket.on("chat-message", (msg) => {
   chatDiv.scrollTop = chatDiv.scrollHeight;
 });
 
+// messaggi privati (testo, allegato, video messaggio)
 socket.on("private-message", (msg) => {
   const div = document.createElement("div");
   div.classList.add("msg");
-  if (currentUser && msg.from.email === currentUser.email) {
+
+  const isMe = currentUser && msg.from.email === currentUser.email;
+  if (isMe) {
     div.classList.add("from-me");
-    div.textContent = `(privato) TU: ${msg.text}`;
   } else {
     div.classList.add("from-other");
-    div.textContent = `(privato) ${msg.from.name}: ${msg.text}`;
   }
+
+  const text = msg.text || "";
+
+  const attachMatch = text.match(/📎 allegato:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
+  const videoMatch = text.match(/🎦 video:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
+
+  if (videoMatch) {
+    const fileName = videoMatch[1];
+    const fileUrl = videoMatch[2];
+
+    const label = document.createElement("div");
+    label.textContent = isMe
+      ? `(privato) TU: 🎦 video-messaggio (${fileName})`
+      : `(privato) ${msg.from.name}: 🎦 video-messaggio (${fileName})`;
+    div.appendChild(label);
+
+    const bubble = document.createElement("div");
+    bubble.className = "video-bubble";
+
+    const videoEl = document.createElement("video");
+    videoEl.src = fileUrl;
+    videoEl.controls = true;
+    videoEl.playsInline = true;
+
+    bubble.appendChild(videoEl);
+    div.appendChild(bubble);
+  } else if (attachMatch) {
+    const fileName = attachMatch[1];
+    const fileUrl = attachMatch[2];
+
+    const label = document.createElement("span");
+    label.textContent = isMe
+      ? `(privato) TU: 📎 allegato: `
+      : `(privato) ${msg.from.name}: 📎 allegato: `;
+
+    const link = document.createElement("a");
+    link.href = fileUrl;
+    link.textContent = fileName;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.style.color = "#38bdf8";
+    link.style.textDecoration = "underline";
+
+    div.appendChild(label);
+    div.appendChild(link);
+  } else {
+    div.textContent = isMe
+      ? `(privato) TU: ${text}`
+      : `(privato) ${msg.from.name}: ${text}`;
+  }
+
   chatDiv.appendChild(div);
   chatDiv.scrollTop = chatDiv.scrollHeight;
 });
@@ -612,7 +765,7 @@ socket.on("kmeet-invite", ({ from, roomUrl }) => {
   }
 });
 
-// invio testo: sempre chat privata
+// ---- INVIO TESTO: sempre chat privata ----
 sendBtn.addEventListener("click", () => {
   const text = input.value.trim();
   if (!text || !currentUser) return;
@@ -638,6 +791,269 @@ input.addEventListener("keypress", (e) => {
     sendBtn.click();
   }
 });
+
+// ===================================================
+// == BOTTONE 📎 ALLEGA FILE ==
+// ===================================================
+
+if (attachBtn && fileInput) {
+  attachBtn.addEventListener("click", () => {
+    if (!currentUser) {
+      appendSystemMessage("Devi effettuare il login per allegare file.");
+      return;
+    }
+    if (!selectedContactEmail) {
+      appendSystemMessage(
+        "Seleziona un contatto per inviare un allegato privato."
+      );
+      return;
+    }
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change", async () => {
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) return;
+
+    if (!currentUser || !selectedContactEmail) {
+      appendSystemMessage(
+        "Devi essere loggato e avere un contatto selezionato per inviare allegati."
+      );
+      fileInput.value = "";
+      return;
+    }
+
+    for (const file of files) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (!data || !data.ok || !data.url) {
+          appendSystemMessage(
+            `Errore durante l'upload del file "${file.name}".`
+          );
+          continue;
+        }
+
+        const publicUrl = data.url;
+        const messageText = `📎 allegato: ${file.name} (${publicUrl})`;
+
+        socket.emit("private-message", {
+          toEmail: selectedContactEmail,
+          text: messageText,
+        });
+      } catch (err) {
+        console.error("Errore upload allegato:", err);
+        appendSystemMessage(
+          `Errore durante l'upload del file "${file.name}".`
+        );
+      }
+    }
+
+    fileInput.value = "";
+  });
+}
+
+// ===================================================
+// == VIDEO MESSAGGIO (bolla tonda) ==
+// ===================================================
+
+async function startVideoMessageRecording() {
+  if (isVideoRecording) return;
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    appendSystemMessage(
+      "Questo browser non permette di usare la videocamera per i video messaggi."
+    );
+    return;
+  }
+
+  if (!currentUser || !selectedContactEmail) {
+    appendSystemMessage(
+      "Devi essere loggato e avere un contatto selezionato per inviare un video messaggio."
+    );
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 480 }, height: { ideal: 480 }, facingMode: "user" },
+      audio: true,
+    });
+
+    videoPreviewStream = stream;
+    videoChunks = [];
+
+    // PREVIEW LIVE: riuso localVideo + videoArea per mostrarti mentre registri
+    if (videoArea) {
+      videoArea.style.display = "block";
+    }
+    if (localVideoElement) {
+      localVideoElement.srcObject = stream;
+    }
+
+    try {
+      if (supportedVideoMimeType) {
+        videoRecorder = new MediaRecorder(stream, {
+          mimeType: supportedVideoMimeType,
+        });
+      } else {
+        videoRecorder = new MediaRecorder(stream);
+      }
+    } catch (e) {
+      console.warn("MediaRecorder video mimeType non accettato, uso default.", e);
+      videoRecorder = new MediaRecorder(stream);
+    }
+
+    videoRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        videoChunks.push(event.data);
+      }
+    };
+
+    videoRecorder.onerror = (ev) => {
+      console.error("MediaRecorder video errore:", ev.error || ev);
+      appendSystemMessage("Errore durante la registrazione del video messaggio.");
+    };
+
+    videoRecorder.onstop = async () => {
+      if (videoRecordTimeout) {
+        clearTimeout(videoRecordTimeout);
+        videoRecordTimeout = null;
+      }
+
+      if (!videoChunks.length) {
+        appendSystemMessage("Nessun video registrato.");
+      } else {
+        try {
+          const blob = new Blob(videoChunks, { type: videoRecorder.mimeType });
+          await sendVideoMessage(blob);
+        } catch (err) {
+          console.error("Errore durante l'invio del video messaggio:", err);
+          appendSystemMessage(
+            "Errore durante l'elaborazione del video messaggio."
+          );
+        }
+      }
+
+      videoChunks = [];
+      if (videoPreviewStream) {
+        videoPreviewStream.getTracks().forEach((t) => t.stop());
+        videoPreviewStream = null;
+      }
+      isVideoRecording = false;
+
+      // chiudo preview live
+      if (localVideoElement) {
+        localVideoElement.srcObject = null;
+      }
+      if (videoArea) {
+        videoArea.style.display = "none";
+      }
+
+      if (videoNoteBtn) {
+        videoNoteBtn.textContent = "▶";
+        videoNoteBtn.disabled = false;
+      }
+    };
+
+    isVideoRecording = true;
+
+    videoRecorder.onstart = () => {
+      console.log("VideoRecorder: start");
+    };
+
+    try {
+      videoRecorder.start();
+      console.log("VideoRecorder: start() chiamato, stato =", videoRecorder.state);
+    } catch (e) {
+      console.error("Errore videoRecorder.start():", e);
+      appendSystemMessage("Errore avvio registrazione video messaggio.");
+      return;
+    }
+
+    appendSystemMessage(
+      "Registrazione video messaggio avviata (max 30 secondi)..."
+    );
+
+    if (videoNoteBtn) {
+      videoNoteBtn.textContent = "■"; // indica che puoi fermare
+      videoNoteBtn.disabled = false;
+    }
+
+    videoRecordTimeout = setTimeout(() => {
+      if (isVideoRecording && videoRecorder && videoRecorder.state === "recording") {
+        appendSystemMessage("Tempo massimo video messaggio raggiunto, stop.");
+        videoRecorder.stop();
+      }
+    }, MAX_VIDEO_SECONDS * 1000);
+  } catch (err) {
+    console.error("Errore accesso camera/microfono per video messaggio", err);
+    appendSystemMessage("Impossibile accedere a camera/microfono per il video messaggio.");
+  }
+}
+
+async function sendVideoMessage(blob) {
+  if (!blob || !currentUser || !selectedContactEmail) return;
+
+  try {
+    const formData = new FormData();
+    const fileName = `video-message-${Date.now()}.webm`;
+    formData.append("file", blob, fileName);
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json().catch(() => null);
+
+    if (!data || !data.ok || !data.url) {
+      appendSystemMessage(
+        "Errore durante l'upload del video messaggio."
+      );
+      return;
+    }
+
+    const publicUrl = data.url;
+    const messageText = `🎦 video: ${fileName} (${publicUrl})`;
+
+    socket.emit("private-message", {
+      toEmail: selectedContactEmail,
+      text: messageText,
+    });
+
+    appendSystemMessage("Video messaggio inviato.");
+  } catch (err) {
+    console.error("Errore upload video messaggio:", err);
+    appendSystemMessage(
+      "Errore durante l'upload del video messaggio."
+    );
+  }
+}
+
+if (videoNoteBtn) {
+  // comportamento start/stop sullo stesso pulsante
+  videoNoteBtn.addEventListener("click", () => {
+    if (!isVideoRecording) {
+      startVideoMessageRecording();
+    } else if (videoRecorder && videoRecorder.state === "recording") {
+      // stop anticipato prima dei 30 secondi
+      if (videoRecordTimeout) {
+        clearTimeout(videoRecordTimeout);
+        videoRecordTimeout = null;
+      }
+      videoRecorder.stop();
+    }
+  });
+}
 
 // ---- WAV ENCODER ----
 function encodeWAVFromFloat32(float32Array, sampleRate = 44100) {
@@ -869,10 +1285,9 @@ function clearCallLogIfTooLong() {
 }
 
 // =====================================================================
-// ==== WEBRTC AUDIO/VIDEO 1-a-1 (SEZIONE AGGIORNATA / RINFORZATA) ====
+// ==== WEBRTC AUDIO/VIDEO 1-a-1 =======================================
 // =====================================================================
 
-// helper per creare stream locale con controlli extra
 async function getLocalStreamAudioOnly() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     appendSystemMessage(
@@ -930,7 +1345,6 @@ async function startLocalMediaWithVideo() {
 
 function createPeerConnection(targetEmail) {
   if (peerConnection) {
-    // in caso sia rimasto qualcosa aperto, chiudiamo prima
     try {
       peerConnection.close();
     } catch {}
@@ -950,12 +1364,13 @@ function createPeerConnection(targetEmail) {
 
   peerConnection.ontrack = (event) => {
     const remoteStream = event.streams[0];
-
     if (!remoteAudioElement) {
       remoteAudioElement = document.createElement("audio");
       remoteAudioElement.autoplay = true;
       remoteAudioElement.controls = true;
       appendSystemMessage("Audio remoto connesso.");
+      remoteAudioElement.style.display = "none";
+      document.body.appendChild(remoteAudioElement);
     }
     remoteAudioElement.srcObject = remoteStream;
 
@@ -966,7 +1381,7 @@ function createPeerConnection(targetEmail) {
 
   peerConnection.onconnectionstatechange = () => {
     appendSystemMessage(
-      `Stato connessione WebRTC: ${peerConnection.connectionState}`
+      "Stato connessione WebRTC: " + peerConnection.connectionState
     );
     if (peerConnection.connectionState === "failed") {
       appendSystemMessage(
@@ -1013,20 +1428,20 @@ async function endCall(reason = "Chiamata terminata.") {
   if (remoteVideoElement) {
     remoteVideoElement.srcObject = null;
   }
+
   if (videoArea) {
     videoArea.style.display = "none";
   }
 
-  appendSystemMessage(reason);
+  appendSystemMessage(reason + " (chiamata audio/video)");
 }
 
-// chiamata audio
+// avvio chiamata audio
 async function startAudioCall() {
   if (!selectedContactEmail) {
     appendSystemMessage("Seleziona un contatto per iniziare una chiamata audio.");
     return;
   }
-
   if (isAudioCallActive || isVideoCallActive) {
     appendSystemMessage("C'è già una chiamata in corso.");
     return;
@@ -1035,6 +1450,7 @@ async function startAudioCall() {
   try {
     const stream = await startLocalAudio();
     currentCallPeerEmail = selectedContactEmail;
+
     createPeerConnection(currentCallPeerEmail);
 
     stream.getTracks().forEach((track) => {
@@ -1055,34 +1471,18 @@ async function startAudioCall() {
       `Chiamata audio verso ${currentCallPeerEmail} in corso...`
     );
   } catch (err) {
-    console.error("Errore avvio chiamata audio", err);
+    console.error("Errore avvio chiamata audio:", err);
     appendSystemMessage("Errore durante l'avvio della chiamata audio.");
     await endCall("Chiamata audio interrotta per errore.");
   }
 }
 
-if (audioCallBtn) {
-  audioCallBtn.addEventListener("click", () => {
-    if (!isAudioCallActive && !isVideoCallActive) {
-      startAudioCall();
-    } else {
-      if (currentCallPeerEmail) {
-        socket.emit("call-hangup", {
-          toEmail: currentCallPeerEmail,
-        });
-      }
-      endCall("Chiamata chiusa da te.");
-    }
-  });
-}
-
-// videochiamata
+// avvio videochiamata
 async function startVideoCall() {
   if (!selectedContactEmail) {
     appendSystemMessage("Seleziona un contatto per iniziare una videochiamata.");
     return;
   }
-
   if (isVideoCallActive || isAudioCallActive) {
     appendSystemMessage("C'è già una chiamata in corso.");
     return;
@@ -1091,6 +1491,7 @@ async function startVideoCall() {
   try {
     const stream = await startLocalMediaWithVideo();
     currentCallPeerEmail = selectedContactEmail;
+
     createPeerConnection(currentCallPeerEmail);
 
     stream.getTracks().forEach((track) => {
@@ -1115,35 +1516,42 @@ async function startVideoCall() {
       `Videochiamata verso ${currentCallPeerEmail} in corso...`
     );
   } catch (err) {
-    console.error("Errore avvio videochiamata", err);
+    console.error("Errore avvio videochiamata:", err);
     appendSystemMessage("Errore durante l'avvio della videochiamata.");
     await endCall("Videochiamata interrotta per errore.");
   }
+}
+
+// bottoni chiamata audio/video
+if (audioCallBtn) {
+  audioCallBtn.addEventListener("click", () => {
+    if (!isAudioCallActive && !isVideoCallActive) {
+      startAudioCall();
+    } else if (currentCallPeerEmail) {
+      socket.emit("call-hangup", { toEmail: currentCallPeerEmail });
+      endCall("Chiamata chiusa da te.");
+    }
+  });
 }
 
 if (videoCallBtn) {
   videoCallBtn.addEventListener("click", () => {
     if (!isVideoCallActive && !isAudioCallActive) {
       startVideoCall();
-    } else {
-      if (currentCallPeerEmail) {
-        socket.emit("call-hangup", {
-          toEmail: currentCallPeerEmail,
-        });
-      }
-      endCall("Chiamata (audio/video) chiusa da te.");
+    } else if (currentCallPeerEmail) {
+      socket.emit("call-hangup", { toEmail: currentCallPeerEmail });
+      endCall("Chiamata audio/video chiusa da te.");
     }
   });
 }
 
-// ---- SEGNALAZIONE CHIAMATE ----
+// segnalazione chiamate
 socket.on("call-offer", async ({ from, offer, mode }) => {
   if (!from || !from.email || !offer) {
     appendSystemMessage("Offerta di chiamata non valida.");
     return;
   }
 
-  // se c'è già una chiamata attiva, rifiutiamo
   if (isAudioCallActive || isVideoCallActive) {
     socket.emit("call-reject", { toEmail: from.email });
     appendSystemMessage(
@@ -1158,35 +1566,32 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
 
   try {
     if (!ringtoneAudio) {
-      ringtoneAudio = new Audio("/ringtone.mp3");
+      ringtoneAudio = new Audio("ringtone.mp3");
       ringtoneAudio.loop = true;
     }
-    await ringtoneAudio.play();
-  } catch (e) {
-    console.warn(
-      "Impossibile riprodurre squillo (auto-play bloccato dal browser)."
+    try {
+      await ringtoneAudio.play();
+    } catch (e) {
+      console.warn("Impossibile riprodurre squillo (auto-play bloccato).", e);
+    }
+
+    const isVideo = mode === "video";
+    const label = isVideo ? "video" : "audio";
+
+    const accept = confirm(
+      `Chiamata ${label} in arrivo da ${from.name} <${from.email}>.\nPuoi rispondere direttamente, non serve selezionare un contatto.\nVuoi rispondere?`
     );
-  }
 
-  const isVideo = mode === "video";
-  const label = isVideo ? "video" : "audio";
+    if (ringtoneAudio) {
+      ringtoneAudio.pause();
+      ringtoneAudio.currentTime = 0;
+    }
 
-  const accept = confirm(
-    `Chiamata ${label} in arrivo da ${from.name} (${from.email}).\n` +
-      `Puoi rispondere direttamente, non serve selezionare un contatto. Vuoi rispondere?`
-  );
+    if (!accept) {
+      socket.emit("call-reject", { toEmail: from.email });
+      return;
+    }
 
-  if (ringtoneAudio) {
-    ringtoneAudio.pause();
-    ringtoneAudio.currentTime = 0;
-  }
-
-  if (!accept) {
-    socket.emit("call-reject", { toEmail: from.email });
-    return;
-  }
-
-  try {
     let stream;
     if (isVideo) {
       stream = await startLocalMediaWithVideo();
@@ -1204,7 +1609,6 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
       videoArea.style.display = "block";
     }
 
-    // attenzione: prima setRemoteDescription(offer), poi createAnswer
     await peerConnection.setRemoteDescription(offer);
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
@@ -1224,53 +1628,55 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
       appendSystemMessage(`Chiamata audio con ${from.email} attiva.`);
     }
   } catch (err) {
-    console.error("Errore risposta chiamata", err);
+    console.error("Errore risposta chiamata:", err);
     appendSystemMessage("Errore durante la risposta alla chiamata.");
     await endCall("Chiamata interrotta per errore nella risposta.");
   }
 });
 
 socket.on("call-answer", async ({ from, answer, mode }) => {
-  if (!peerConnection || !answer) return;
   try {
-    await peerConnection.setRemoteDescription(answer);
-
-    if (mode === "video") {
-      isVideoCallActive = true;
-      if (videoArea) videoArea.style.display = "block";
-      appendSystemMessage(`Videochiamata con ${from.email} connessa.`);
-    } else {
-      isAudioCallActive = true;
-      appendSystemMessage(`Chiamata audio con ${from.email} connessa.`);
+    if (!peerConnection) {
+      appendSystemMessage("Ricevuta answer ma peerConnection assente.");
+      return;
     }
-  } catch (err) {
-    console.error("Errore setRemoteDescription(answer)", err);
+    await peerConnection.setRemoteDescription(answer);
     appendSystemMessage(
-      "Errore nel completare la connessione della chiamata."
+      `L'utente ${from?.email || "remote"} ha risposto alla chiamata (${mode}).`
     );
-    await endCall("Chiamata interrotta per errore di connessione.");
+  } catch (err) {
+    console.error("Errore setRemoteDescription(answer):", err);
+    appendSystemMessage("Errore nella gestione della risposta alla chiamata.");
   }
 });
 
-socket.on("call-ice-candidate", async ({ candidate }) => {
-  if (!peerConnection || !candidate) return;
+socket.on("call-ice-candidate", async ({ from, candidate }) => {
   try {
+    if (!peerConnection) {
+      appendSystemMessage(
+        "Ricevuto ICE candidate ma peerConnection non esiste."
+      );
+      return;
+    }
     await peerConnection.addIceCandidate(candidate);
   } catch (err) {
-    console.error("Errore addIceCandidate", err);
-    appendSystemMessage("Errore nella gestione dei candidati ICE.");
+    console.error("Errore addIceCandidate:", err);
+    appendSystemMessage("Errore nella gestione di un ICE candidate.");
   }
 });
 
-socket.on("call-hangup", ({ from }) => {
-  endCall(`Chiamata chiusa da ${from?.email || "remote"}.`);
+socket.on("call-hangup", async ({ from }) => {
+  await endCall(`Chiamata terminata da ${from?.email || "remote"}.`);
 });
 
 socket.on("call-reject", ({ from }) => {
   endCall(`Chiamata rifiutata da ${from?.email || "remote"}.`);
 });
 
-// ---- BOOTSTRAP DOPO LOGIN ----
+// =====================================================================
+// ==== BOOTSTRAP DOPO LOGIN ===========================================
+// =====================================================================
+
 window.initZeusApp = function (user) {
   currentUser = user || null;
   if (!currentUser || !currentUser.email) {
@@ -1281,5 +1687,60 @@ window.initZeusApp = function (user) {
   showApp();
 
   socket.emit("set-user", currentUser);
+
   loadUsers();
 };
+
+// handler login (pulsante ENTRA)
+if (loginBtn) {
+  loginBtn.addEventListener("click", async () => {
+    const name = (nameInput && nameInput.value || "").trim();
+    const email = (emailInput && emailInput.value || "").trim();
+
+    if (!name || !email) {
+      if (errorDiv) {
+        errorDiv.textContent = "Inserisci nome ed email.";
+      } else {
+        alert("Inserisci nome ed email.");
+      }
+      return;
+    }
+
+    try {
+      if (errorDiv) errorDiv.textContent = "";
+
+      // uso /api/login diretto (senza OTP) come da server_step7 N2/N5
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data || !data.ok || !data.user) {
+        const msg =
+          (data && data.error) ||
+          "Login fallito. Controlla i dati.";
+        if (errorDiv) {
+          errorDiv.textContent = msg;
+        } else {
+          alert(msg);
+        }
+        return;
+      }
+
+      window.initZeusApp(data.user);
+    } catch (err) {
+      console.error("Errore durante il login:", err);
+      if (errorDiv) {
+        errorDiv.textContent = "Errore di connessione al server.";
+      } else {
+        alert("Errore di connessione al server.");
+      }
+    }
+  });
+}
+
+// all'avvio mostriamo la schermata di login
+showLogin();
