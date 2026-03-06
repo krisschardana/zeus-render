@@ -1,55 +1,35 @@
 // server_step7.js
-// ZEUS server: chat + vocali + WebRTC audio/video + EMAIL OTP (standby per Render)
-
-// ATTENZIONE: il codice OTP resta nel file ma NON viene usato per il login.
-// Quando avrai una VPS, potrai riattivarlo facilmente.
-
 const express = require("express");
 const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
 const bodyParser = require("body-parser");
-const nodemailer = require("nodemailer"); // <-- email (non usata ora)
-const crypto = require("crypto"); // <-- per OTP sicuro (non usato ora)
-const fs = require("fs"); // <-- per persistenza rubrica utenti
-const multer = require("multer"); // <-- per upload file
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
+const fs = require("fs");
+const multer = require("multer");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// porta (locale 8080 oppure porta fornita da Render)
 const PORT = process.env.PORT || 8080;
 
-// modalità test OTP (niente invio SMTP reale)
-// su Render: TEST_MODE può essere "true"/"false", "1"/"0", "yes"/"no"
 const rawTestMode = (process.env.TEST_MODE || "").toString().trim().toLowerCase();
-const TEST_MODE =
-  rawTestMode === "true" || rawTestMode === "1" || rawTestMode === "yes";
+const TEST_MODE = rawTestMode === "true" || rawTestMode === "1" || rawTestMode === "yes";
 
 console.log("Valore TEST_MODE (env):", process.env.TEST_MODE);
 console.log("Valore TEST_MODE (boolean):", TEST_MODE);
 
-// CONFIG EMAIL da variabili d'ambiente (NO password in chiaro)
-// Su Render imposta ad es.:
-// SMTP_HOST = mail.infomaniak.com
-// SMTP_PORT = 587
-// SMTP_USER = gnosis@ik.me
-// SMTP_PASS = <la tua password>
-// opzionale: SMTP_FROM_NAME = "ZEUS APP"
 const SMTP_HOST = process.env.SMTP_HOST || "mail.infomaniak.com";
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
 const SMTP_USER = process.env.SMTP_USER || "gnosis@ik.me";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || "ZEUS APP";
 
-// percorso file rubrica utenti persistente
 const USERS_DB_PATH = path.join(__dirname, "users.json");
-
-// cartella upload file allegati
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 
-// crea cartella uploads se non esiste
 if (!fs.existsSync(UPLOADS_DIR)) {
   try {
     fs.mkdirSync(UPLOADS_DIR);
@@ -59,11 +39,8 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   }
 }
 
-// utenti in “database” in memoria (verranno caricati da file se esiste)
-// struttura: [{ name, email }]
 let users = [];
 
-// carica rubrica da file JSON se presente
 function loadUsersFromFile() {
   try {
     if (fs.existsSync(USERS_DB_PATH)) {
@@ -71,19 +48,16 @@ function loadUsersFromFile() {
       const data = JSON.parse(raw);
       if (Array.isArray(data)) {
         users = data;
-        console.log("Rubrica utenti caricata da file:", users.length, "utenti.");
-      } else {
-        console.warn("users.json non contiene un array, inizializzo rubrica vuota.");
+        console.log("Rubrica caricata:", users.length, "utenti.");
       }
     } else {
-      console.log("Nessun users.json trovato, rubrica iniziale vuota.");
+      console.log("Nessun users.json trovato, rubrica vuota.");
     }
   } catch (err) {
     console.error("Errore lettura users.json:", err);
   }
 }
 
-// salva rubrica su file JSON
 function saveUsersToFile() {
   try {
     fs.writeFileSync(USERS_DB_PATH, JSON.stringify(users, null, 2), "utf8");
@@ -92,205 +66,117 @@ function saveUsersToFile() {
   }
 }
 
-// carica rubrica all'avvio server
 loadUsersFromFile();
 
-// mappa email -> socket.id (utente online)
 const onlineSocketsByEmail = {};
-
-// mappa email -> dati OTP (per futuro uso)
-// { [email]: { code: '123456', expiresAt: 1234567890, name: '...' } }
 const pendingOtps = {};
 
-// middleware base
-app.use(bodyParser.json());
-
-// statici: app frontend
+// limite aumentato a 10mb per avatar base64
+app.use(bodyParser.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
-// statici: file caricati (allegati)
-app.use("/uploads", express.static(UPLOADS_DIR)); // es: /uploads/nomefile.jpg restituisce il file
+app.use("/uploads", express.static(UPLOADS_DIR));
 
-// ---- CONFIGURAZIONE EMAIL (Nodemailer + Infomaniak) ----
+// ---- EMAIL ----
 let transporter = null;
 
 if (!TEST_MODE) {
-  if (!SMTP_PASS) {
-    console.warn("ATTENZIONE: SMTP_PASS non impostata. L'invio email fallirà.");
-  }
-
+  if (!SMTP_PASS) console.warn("ATTENZIONE: SMTP_PASS non impostata.");
   transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
-    secure: false, // STARTTLS su 587
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
+    secure: false,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
-
-  console.log("Modalità EMAIL reale attiva (TEST_MODE = false).");
-  console.log(`SMTP host: ${SMTP_HOST}:${SMTP_PORT}, user: ${SMTP_USER}`);
+  console.log("Modalità EMAIL reale attiva.");
 } else {
-  console.log("ATTENZIONE: TEST_MODE = true, OTP NON inviato via email, solo log.");
+  console.log("TEST_MODE = true, email non inviate.");
 }
 
-// funzione per creare OTP 6 cifre sicuro (per futuro uso)
 function generateOtp() {
   return crypto.randomInt(100000, 999999).toString();
 }
 
-// ---- CONFIG UPLOAD FILE (multer) ----
-
-// storage su disco: salva i file in uploads/ con timestamp nel nome
+// ---- UPLOAD FILE ----
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, UPLOADS_DIR);
-  },
+  destination: function (req, file, cb) { cb(null, UPLOADS_DIR); },
   filename: function (req, file, cb) {
     const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-    const uniqueName = Date.now() + "-" + safeName;
-    cb(null, uniqueName);
+    cb(null, Date.now() + "-" + safeName);
   },
 });
 
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: 20 * 1024 * 1024, // 20 MB max per file
-  },
-});
+const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
 
-// API upload: riceve 1 file "file", restituisce URL pubblico
 app.post("/api/upload", upload.single("file"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ ok: false, error: "Nessun file caricato." });
-  }
-
-  // path pubblico servito da /uploads
+  if (!req.file) return res.status(400).json({ ok: false, error: "Nessun file caricato." });
   const publicUrl = `/uploads/${req.file.filename}`;
   console.log("File caricato:", req.file.originalname, "->", publicUrl);
-
-  return res.json({
-    ok: true,
-    url: publicUrl,
-    originalName: req.file.originalname,
-    size: req.file.size,
-    mimeType: req.file.mimetype,
-  });
+  return res.json({ ok: true, url: publicUrl, originalName: req.file.originalname, size: req.file.size, mimeType: req.file.mimetype });
 });
 
-// ---- API REST EMAIL + OTP ----
-// *** STANDBY OTP ***
-// Ora /api/login-request fa login diretto e NON genera né invia OTP,
-// così l'app non viene bloccata da Render/SMTP.
-
-// 1) Richiesta login: LOGIN DIRETTO (OTP in standby)
+// ---- LOGIN ----
 app.post("/api/login-request", async (req, res) => {
   const { name, email } = req.body || {};
-
-  if (!name || !email) {
-    return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
-  }
-
-  // LOGIN DIRETTO: cerca o crea utente, senza OTP
+  if (!name || !email) return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
   let user = users.find((u) => u.email === email);
-  if (!user) {
-    user = { name, email };
-    users.push(user);
-    saveUsersToFile(); // persistenza rubrica
-  }
-
-  // se in futuro vorrai riattivare OTP, userai pendingOtps + generateOtp qui.
+  if (!user) { user = { name, email }; users.push(user); saveUsersToFile(); }
   return res.json({ ok: true, user });
 });
 
-// 2) Verifica OTP (NON usata ora, tenuta pronta per VPS futura)
 app.post("/api/login-verify", (req, res) => {
   const { name, email, code } = req.body || {};
-
-  if (!name || !email || !code) {
-    return res.json({
-      ok: false,
-      error: "Nome, email e codice sono obbligatori.",
-    });
-  }
-
+  if (!name || !email || !code) return res.json({ ok: false, error: "Dati mancanti." });
   const otpData = pendingOtps[email];
-  if (!otpData) {
-    return res.json({
-      ok: false,
-      error: "Nessun codice OTP trovato per questa email.",
-    });
-  }
-
-  if (Date.now() > otpData.expiresAt) {
-    delete pendingOtps[email];
-    return res.json({
-      ok: false,
-      error: "Codice OTP scaduto. Richiedi un nuovo codice.",
-    });
-  }
-
-  if (otpData.code !== code) {
-    return res.json({ ok: false, error: "Codice OTP non valido." });
-  }
-
-  // OTP corretto: rimuovi pendente
+  if (!otpData) return res.json({ ok: false, error: "Nessun OTP trovato." });
+  if (Date.now() > otpData.expiresAt) { delete pendingOtps[email]; return res.json({ ok: false, error: "OTP scaduto." }); }
+  if (otpData.code !== code) return res.json({ ok: false, error: "OTP non valido." });
   delete pendingOtps[email];
-
-  // cerca se esiste già
   let user = users.find((u) => u.email === email);
-  if (!user) {
-    user = { name, email };
-    users.push(user);
-    saveUsersToFile(); // persistenza rubrica
-  }
-
+  if (!user) { user = { name, email }; users.push(user); saveUsersToFile(); }
   return res.json({ ok: true, user });
 });
 
-// ---- API REST SEMPLICI ORIGINALE (debug) ----
 app.post("/api/login", (req, res) => {
   const { name, email } = req.body || {};
-
-  if (!name || !email) {
-    return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
-  }
-
+  if (!name || !email) return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
   let user = users.find((u) => u.email === email);
-  if (!user) {
-    user = { name, email };
-    users.push(user);
-    saveUsersToFile(); // persistenza rubrica
-  }
-
+  if (!user) { user = { name, email }; users.push(user); saveUsersToFile(); }
   return res.json({ ok: true, user });
 });
 
-// lista utenti
+// ---- LISTA UTENTI ----
 app.get("/api/users", (req, res) => {
   res.json(users);
 });
 
-// elimina utente dalla rubrica (per futuro bottone admin)
-app.delete("/api/users/:email", (req, res) => {
-  const emailParam = (req.params.email || "").trim().toLowerCase();
-  if (!emailParam) {
-    return res.status(400).json({ ok: false, error: "Email mancante." });
-  }
+// ---- PROFILO UTENTE (NUOVO) ----
+app.post("/api/profile", (req, res) => {
+  const { email, name, phone, address, avatar } = req.body || {};
 
-  const before = users.length;
-  users = users.filter(
-    (u) => (u.email || "").trim().toLowerCase() !== emailParam
-  );
-  const after = users.length;
+  if (!email) return res.json({ ok: false, error: "Email obbligatoria." });
 
-  if (after === before) {
-    return res.json({ ok: false, error: "Utente non trovato in rubrica." });
-  }
+  const userIndex = users.findIndex((u) => u.email === email);
+  if (userIndex === -1) return res.json({ ok: false, error: "Utente non trovato." });
+
+  if (name) users[userIndex].name = name;
+  if (typeof phone !== "undefined") users[userIndex].phone = phone;
+  if (typeof address !== "undefined") users[userIndex].address = address;
+  if (typeof avatar !== "undefined") users[userIndex].avatar = avatar;
 
   saveUsersToFile();
-  console.log("Utente rimosso dalla rubrica:", emailParam);
+  console.log("Profilo aggiornato per:", email);
+  return res.json({ ok: true, user: users[userIndex] });
+});
+
+// ---- ELIMINA UTENTE ----
+app.delete("/api/users/:email", (req, res) => {
+  const emailParam = (req.params.email || "").trim().toLowerCase();
+  if (!emailParam) return res.status(400).json({ ok: false, error: "Email mancante." });
+  const before = users.length;
+  users = users.filter((u) => (u.email || "").trim().toLowerCase() !== emailParam);
+  if (users.length === before) return res.json({ ok: false, error: "Utente non trovato." });
+  saveUsersToFile();
+  console.log("Utente rimosso:", emailParam);
   return res.json({ ok: true });
 });
 
@@ -298,169 +184,95 @@ app.delete("/api/users/:email", (req, res) => {
 io.on("connection", (socket) => {
   console.log("Utente connesso:", socket.id);
 
-  // memorizza l'utente associato a questo socket
   socket.on("set-user", (user) => {
     if (!user || !user.email) return;
     socket.data.user = user;
     onlineSocketsByEmail[user.email] = socket.id;
-
-    // notifica a tutti che questo utente è online
     io.emit("user-online", user);
   });
 
-  // ---- CHAT TESTO ----
   socket.on("chat-message", (text) => {
     const from = socket.data.user;
     if (!from) return;
-
-    io.emit("chat-message", {
-      from,
-      text,
-      ts: Date.now(),
-    });
+    io.emit("chat-message", { from, text, ts: Date.now() });
   });
 
   socket.on("private-message", ({ toEmail, text }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !text) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("private-message", {
-      from,
-      text,
-      ts: Date.now(),
-    });
-
-    socket.emit("private-message", {
-      from,
-      text,
-      ts: Date.now(),
-    });
+    io.to(targetSocketId).emit("private-message", { from, text, ts: Date.now() });
+    socket.emit("private-message", { from, text, ts: Date.now() });
   });
 
-  // ---- INVITI KMEET (CONFERENZA) ----
   socket.on("kmeet-invite", ({ toEmail, roomUrl }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !roomUrl) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("kmeet-invite", {
-      from,
-      roomUrl,
-      ts: Date.now(),
-    });
+    io.to(targetSocketId).emit("kmeet-invite", { from, roomUrl, ts: Date.now() });
   });
 
-  // ---- MESSAGGI VOCALI ----
   socket.on("voice-message", (payload) => {
     const from = socket.data.user;
     if (!from) return;
-
     const { mode, toEmail, audio } = payload || {};
     if (!audio) return;
-
     if (mode === "conference") {
-      io.emit("voice-message", {
-        mode: "conference",
-        from,
-        audio,
-        ts: Date.now(),
-      });
+      io.emit("voice-message", { mode: "conference", from, audio, ts: Date.now() });
     } else if (mode === "private" && toEmail) {
       const targetSocketId = onlineSocketsByEmail[toEmail];
       if (!targetSocketId) return;
-
-      io.to(targetSocketId).emit("voice-message", {
-        mode: "private",
-        from,
-        audio,
-        ts: Date.now(),
-      });
-
-      socket.emit("voice-message", {
-        mode: "private",
-        from,
-        audio,
-        ts: Date.now(),
-      });
+      io.to(targetSocketId).emit("voice-message", { mode: "private", from, audio, ts: Date.now() });
+      socket.emit("voice-message", { mode: "private", from, audio, ts: Date.now() });
     }
   });
 
-  // ---- SEGNALAZIONE WEBRTC (AUDIO + VIDEO) ----
   socket.on("call-offer", ({ toEmail, offer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !offer) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("call-offer", {
-      from,
-      offer,
-      mode: mode || "audio",
-    });
+    io.to(targetSocketId).emit("call-offer", { from, offer, mode: mode || "audio" });
   });
 
   socket.on("call-answer", ({ toEmail, answer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !answer) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("call-answer", {
-      from,
-      answer,
-      mode: mode || "audio",
-    });
+    io.to(targetSocketId).emit("call-answer", { from, answer, mode: mode || "audio" });
   });
 
   socket.on("call-ice-candidate", ({ toEmail, candidate }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !candidate) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("call-ice-candidate", {
-      from,
-      candidate,
-    });
+    io.to(targetSocketId).emit("call-ice-candidate", { from, candidate });
   });
 
   socket.on("call-hangup", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("call-hangup", {
-      from,
-    });
+    io.to(targetSocketId).emit("call-hangup", { from });
   });
 
   socket.on("call-reject", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
-
     const targetSocketId = onlineSocketsByEmail[toEmail];
     if (!targetSocketId) return;
-
-    io.to(targetSocketId).emit("call-reject", {
-      from,
-    });
+    io.to(targetSocketId).emit("call-reject", { from });
   });
 
   socket.on("disconnect", () => {
     const user = socket.data.user;
     if (user && user.email) {
-      const currentId = onlineSocketsByEmail[user.email];
-      if (currentId === socket.id) {
+      if (onlineSocketsByEmail[user.email] === socket.id) {
         delete onlineSocketsByEmail[user.email];
       }
       io.emit("user-offline", user);
@@ -469,10 +281,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// avvio server
 server.listen(PORT, () => {
   console.log(`ZEUS server attivo su http://localhost:${PORT}`);
-  if (TEST_MODE) {
-    console.log("ZEUS in modalità TEST OTP (email non inviate).");
-  }
+  if (TEST_MODE) console.log("ZEUS in modalità TEST.");
 });
