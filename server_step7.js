@@ -18,7 +18,11 @@ const io = new Server(server, {
     methods: ['GET', 'POST']
   },
   transports: ['websocket', 'polling'],
-  allowEIO3: true
+  allowEIO3: true,
+  pingTimeout: 60000,       // aspetta 60s prima di dichiarare disconnessione
+  pingInterval: 25000,      // ping ogni 25s per tenere viva la connessione
+  upgradeTimeout: 30000,
+  maxHttpBufferSize: 50e6   // 50MB per file grandi
 });
 
 // CORS per tutte le route
@@ -147,11 +151,15 @@ function getMessages(emailA, emailB, limit = 100) {
 
 loadMessagesFromFile();
 
-const onlineSocketsByEmail = {};
+// ---- MAPPA SOCKET PER EMAIL ----
+// Supporta multiple sessioni per stesso utente (es. tab multipli)
+const onlineSocketsByEmail = {};  // email -> socketId (ultimo attivo)
+const socketsByEmail = {};        // email -> Set di socketId
+
 const pendingOtps = {};
 const typingTimers = {};
 
-app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(UPLOADS_DIR));
 
@@ -180,7 +188,7 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
 
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Nessun file caricato." });
@@ -208,7 +216,6 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
         return res.json({ ok: true, url: publicUrl, originalName: req.file.originalname, size: req.file.size, mimeType: "video/mp4" });
       } catch (e) { continue; }
     }
-    // ffmpeg non disponibile, manda WebM
     console.log("ffmpeg non trovato, mando WebM:", req.file.filename);
   }
 
@@ -294,16 +301,38 @@ app.delete("/api/users/:email", (req, res) => {
   return res.json({ ok: true });
 });
 
+// ---- HELPER: invia evento a tutti i socket di un utente ----
+function emitToUser(email, event, data) {
+  const emailNorm = normalizeEmail(email);
+  const sockets = socketsByEmail[emailNorm];
+  if (!sockets || sockets.size === 0) return false;
+  sockets.forEach((socketId) => {
+    io.to(socketId).emit(event, data);
+  });
+  return true;
+}
+
 // ---- SOCKET.IO ----
 io.on("connection", (socket) => {
   console.log("Utente connesso:", socket.id);
+
+  // Heartbeat: risponde al ping del client per tenere viva la connessione
+  socket.on("ping-client", () => {
+    socket.emit("pong-server", { ts: Date.now() });
+  });
 
   socket.on("set-user", (user) => {
     if (!user || !user.email) return;
     user.email = normalizeEmail(user.email);
     socket.data.user = user;
+
+    // Registra socket
     onlineSocketsByEmail[user.email] = socket.id;
+    if (!socketsByEmail[user.email]) socketsByEmail[user.email] = new Set();
+    socketsByEmail[user.email].add(socket.id);
+
     io.emit("user-online", user);
+    console.log("Utente online:", user.email, "socket:", socket.id);
   });
 
   socket.on("chat-message", (text) => {
@@ -318,9 +347,12 @@ io.on("connection", (socket) => {
     const toEmailNorm = normalizeEmail(toEmail);
     const saved = saveMessage(from.email, toEmailNorm, text, "private");
     const payload = { from, text, ts: saved.ts };
-    const targetSocketId = onlineSocketsByEmail[toEmailNorm];
-    if (targetSocketId) io.to(targetSocketId).emit("private-message", payload);
-    socket.emit("private-message", payload);
+
+    // Invia a tutti i socket del destinatario
+    emitToUser(toEmailNorm, "private-message", payload);
+
+    // Invia conferma al mittente (tutti i suoi socket)
+    emitToUser(from.email, "private-message", payload);
   });
 
   // ---- TYPING ----
@@ -328,12 +360,11 @@ io.on("connection", (socket) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
     const toEmailNorm = normalizeEmail(toEmail);
-    const targetSocketId = onlineSocketsByEmail[toEmailNorm];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("typing-start", { from });
-    if (typingTimers[from.email + "__" + toEmailNorm]) clearTimeout(typingTimers[from.email + "__" + toEmailNorm]);
-    typingTimers[from.email + "__" + toEmailNorm] = setTimeout(() => {
-      io.to(targetSocketId).emit("typing-stop", { from });
+    emitToUser(toEmailNorm, "typing-start", { from });
+    const key = from.email + "__" + toEmailNorm;
+    if (typingTimers[key]) clearTimeout(typingTimers[key]);
+    typingTimers[key] = setTimeout(() => {
+      emitToUser(toEmailNorm, "typing-stop", { from });
     }, 4000);
   });
 
@@ -341,20 +372,15 @@ io.on("connection", (socket) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
     const toEmailNorm = normalizeEmail(toEmail);
-    const targetSocketId = onlineSocketsByEmail[toEmailNorm];
-    if (targetSocketId) io.to(targetSocketId).emit("typing-stop", { from });
-    if (typingTimers[from.email + "__" + toEmailNorm]) {
-      clearTimeout(typingTimers[from.email + "__" + toEmailNorm]);
-      delete typingTimers[from.email + "__" + toEmailNorm];
-    }
+    emitToUser(toEmailNorm, "typing-stop", { from });
+    const key = from.email + "__" + toEmailNorm;
+    if (typingTimers[key]) { clearTimeout(typingTimers[key]); delete typingTimers[key]; }
   });
 
   socket.on("kmeet-invite", ({ toEmail, roomUrl }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !roomUrl) return;
-    const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("kmeet-invite", { from, roomUrl, ts: Date.now() });
+    emitToUser(normalizeEmail(toEmail), "kmeet-invite", { from, roomUrl, ts: Date.now() });
   });
 
   socket.on("voice-message", (payload) => {
@@ -365,60 +391,70 @@ io.on("connection", (socket) => {
     if (mode === "conference") {
       io.emit("voice-message", { mode: "conference", from, audio, ts: Date.now() });
     } else if (mode === "private" && toEmail) {
-      const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-      if (!targetSocketId) return;
-      io.to(targetSocketId).emit("voice-message", { mode: "private", from, audio, ts: Date.now() });
-      socket.emit("voice-message", { mode: "private", from, audio, ts: Date.now() });
+      const toEmailNorm = normalizeEmail(toEmail);
+      const data = { mode: "private", from, audio, ts: Date.now() };
+      emitToUser(toEmailNorm, "voice-message", data);
+      emitToUser(from.email, "voice-message", data);
     }
   });
 
+  // ---- WEBRTC ----
   socket.on("call-offer", ({ toEmail, offer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !offer) return;
-    const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("call-offer", { from, offer, mode: mode || "audio" });
+    console.log("call-offer da", from.email, "a", toEmail, "mode:", mode);
+    emitToUser(normalizeEmail(toEmail), "call-offer", { from, offer, mode: mode || "audio" });
   });
 
   socket.on("call-answer", ({ toEmail, answer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !answer) return;
-    const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("call-answer", { from, answer, mode: mode || "audio" });
+    console.log("call-answer da", from.email, "a", toEmail);
+    emitToUser(normalizeEmail(toEmail), "call-answer", { from, answer, mode: mode || "audio" });
   });
 
   socket.on("call-ice-candidate", ({ toEmail, candidate }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !candidate) return;
-    const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("call-ice-candidate", { from, candidate });
+    emitToUser(normalizeEmail(toEmail), "call-ice-candidate", { from, candidate });
   });
 
   socket.on("call-hangup", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
-    const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("call-hangup", { from });
+    emitToUser(normalizeEmail(toEmail), "call-hangup", { from });
   });
 
   socket.on("call-reject", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
-    const targetSocketId = onlineSocketsByEmail[normalizeEmail(toEmail)];
-    if (!targetSocketId) return;
-    io.to(targetSocketId).emit("call-reject", { from });
+    emitToUser(normalizeEmail(toEmail), "call-reject", { from });
   });
 
-  socket.on("disconnect", () => {
+  // ---- DISCONNECT ----
+  socket.on("disconnect", (reason) => {
     const user = socket.data.user;
+    console.log("Disconnesso:", socket.id, "motivo:", reason);
+
     if (user && user.email) {
-      if (onlineSocketsByEmail[user.email] === socket.id) delete onlineSocketsByEmail[user.email];
-      io.emit("user-offline", user);
+      // Rimuovi questo socket dalla lista
+      if (socketsByEmail[user.email]) {
+        socketsByEmail[user.email].delete(socket.id);
+      }
+
+      // Se non ha altri socket attivi, è offline
+      if (!socketsByEmail[user.email] || socketsByEmail[user.email].size === 0) {
+        delete onlineSocketsByEmail[user.email];
+        delete socketsByEmail[user.email];
+        io.emit("user-offline", user);
+        console.log("Utente offline:", user.email);
+      } else {
+        // Ha altri socket attivi, aggiorna il principale
+        const remaining = [...socketsByEmail[user.email]];
+        onlineSocketsByEmail[user.email] = remaining[remaining.length - 1];
+        console.log("Utente ancora online su altro socket:", user.email);
+      }
     }
-    console.log("Utente disconnesso:", socket.id);
   });
 });
 
