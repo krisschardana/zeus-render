@@ -1,4 +1,21 @@
 const socket = io();
+
+// ---- SBLOCCO AUDIOCONTEXT iOS ----
+let audioCtxUnlocked = false;
+function unlockAudioContext() {
+  if (audioCtxUnlocked) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+    ctx.resume().then(() => { audioCtxUnlocked = true; });
+  } catch(e) {}
+}
+document.addEventListener('touchstart', unlockAudioContext, { once: true });
+document.addEventListener('click', unlockAudioContext, { once: true });
 let currentUser = null;
 let selectedContactEmail = null;
 let onlineUsers = {};
@@ -263,9 +280,23 @@ function buildMessageElement(fromUser, text, ts, isMe) {
     const videoBubble = document.createElement("div");
     videoBubble.className = "video-bubble";
     const videoEl = document.createElement("video");
-    videoEl.src = videoMatch[2];
     videoEl.controls = true;
     videoEl.playsInline = true;
+    videoEl.setAttribute("playsinline", "");
+    videoEl.setAttribute("webkit-playsinline", "");
+    videoEl.preload = "metadata";
+    // Source multipli per compatibilità universale
+    const src1 = document.createElement("source");
+    src1.src = videoMatch[2];
+    src1.type = videoMatch[2].endsWith(".mp4") ? "video/mp4" : "video/webm";
+    videoEl.appendChild(src1);
+    // fallback link download
+    const fallback = document.createElement("a");
+    fallback.href = videoMatch[2];
+    fallback.textContent = "▶ Apri video";
+    fallback.target = "_blank";
+    fallback.style.cssText = "color:#38bdf8;font-size:12px;";
+    videoEl.appendChild(fallback);
     videoBubble.appendChild(videoEl);
     wrapper.appendChild(bubble);
     wrapper.appendChild(videoBubble);
@@ -610,17 +641,38 @@ window.addEventListener("DOMContentLoaded", () => {
 
 function initAudioMimeType() {
   if (typeof MediaRecorder === "undefined") return;
-  const candidates = ["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/ogg"];
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/ogg",
+    "audio/mp4",
+    "audio/aac",
+    ""
+  ];
   for (const type of candidates) {
-    if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) { supportedAudioMimeType = type; return; }
+    if (!type || (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type))) {
+      supportedAudioMimeType = type || null;
+      return;
+    }
   }
 }
 
 function initVideoMimeType() {
   if (typeof MediaRecorder === "undefined") return;
-  const candidates = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"];
+  const candidates = [
+    "video/mp4;codecs=h264,aac",
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+    ""
+  ];
   for (const type of candidates) {
-    if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) { supportedVideoMimeType = type; return; }
+    if (!type || (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type))) {
+      supportedVideoMimeType = type || null;
+      return;
+    }
   }
 }
 
@@ -996,13 +1048,18 @@ async function startRecording() {
     mediaRecorder.onstop = async () => {
       if (!audioChunks.length) { appendSystemMessage("Nessun audio registrato."); return; }
       try {
-        const blob = new Blob(audioChunks);
-        const arrayBuffer = await blob.arrayBuffer();
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const wavBlob = encodeWAVFromFloat32(audioBuffer.getChannelData(0), audioBuffer.sampleRate || 44100);
-        sendVoiceMessage(wavBlob);
-      } catch (err) { appendSystemMessage("Errore conversione WAV."); }
+        const blob = new Blob(audioChunks, { type: supportedAudioMimeType || "audio/webm" });
+        try {
+          const arrayBuffer = await blob.arrayBuffer();
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+          const wavBlob = encodeWAVFromFloat32(audioBuffer.getChannelData(0), audioBuffer.sampleRate || 44100);
+          sendVoiceMessage(wavBlob);
+        } catch (decodeErr) {
+          // Su iOS non riesce a decodificare - manda blob diretto
+          sendVoiceMessage(blob);
+        }
+      } catch (err) { appendSystemMessage("Errore registrazione audio."); }
       audioChunks = [];
       stream.getTracks().forEach((t) => t.stop());
     };
@@ -1058,6 +1115,9 @@ socket.on("voice-message", (msg) => {
   audio.controls = true;
   audio.src = msg.audio;
   audio.style.marginTop = "4px";
+  audio.style.maxWidth = "100%";
+  audio.setAttribute("playsinline", "");
+  audio.preload = "metadata";
   div.appendChild(audio);
 
   const timeEl = document.createElement("div");
