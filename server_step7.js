@@ -8,6 +8,7 @@ const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const fs = require("fs");
 const multer = require("multer");
+const { execFile } = require("child_process");
 
 const app = express();
 const server = http.createServer(app);
@@ -181,9 +182,37 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
 
-app.post("/api/upload", upload.single("file"), (req, res) => {
+app.post("/api/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Nessun file caricato." });
-  const publicUrl = `/uploads/${req.file.filename}`;
+
+  const isWebm = req.file.mimetype === "video/webm" || req.file.originalname.includes(".webm");
+
+  if (isWebm) {
+    const inputPath = req.file.path;
+    const outputName = req.file.filename.replace(".webm", ".mp4");
+    const outputPath = path.join(UPLOADS_DIR, outputName);
+    const ffmpegPaths = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "ffmpeg"];
+
+    for (const ffPath of ffmpegPaths) {
+      try {
+        await new Promise((resolve, reject) => {
+          execFile(ffPath, [
+            "-i", inputPath,
+            "-c:v", "libx264", "-c:a", "aac",
+            "-movflags", "+faststart", "-y", outputPath
+          ], { timeout: 60000 }, (err) => { if (err) reject(err); else resolve(); });
+        });
+        try { fs.unlinkSync(inputPath); } catch(e) {}
+        const publicUrl = "/uploads/" + outputName;
+        console.log("Video convertito MP4:", publicUrl);
+        return res.json({ ok: true, url: publicUrl, originalName: req.file.originalname, size: req.file.size, mimeType: "video/mp4" });
+      } catch (e) { continue; }
+    }
+    // ffmpeg non disponibile, manda WebM
+    console.log("ffmpeg non trovato, mando WebM:", req.file.filename);
+  }
+
+  const publicUrl = "/uploads/" + req.file.filename;
   console.log("File caricato:", req.file.originalname, "->", publicUrl);
   return res.json({ ok: true, url: publicUrl, originalName: req.file.originalname, size: req.file.size, mimeType: req.file.mimetype });
 });

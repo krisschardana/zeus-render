@@ -122,16 +122,19 @@ function playSound(type) {
 
 // ---- SQUILLO PERSISTENTE ----
 let callingRingtoneInterval = null;
+let ringtoneOscActive = false;
 
 function startCallingRingtone() {
   stopCallingRingtone();
-  // suona subito
+  ringtoneOscActive = true;
   _playCallBeep();
-  // poi ogni 2 secondi
-  callingRingtoneInterval = setInterval(_playCallBeep, 2000);
+  callingRingtoneInterval = setInterval(() => {
+    if (ringtoneOscActive) _playCallBeep();
+  }, 2200);
 }
 
 function stopCallingRingtone() {
+  ringtoneOscActive = false;
   if (callingRingtoneInterval) {
     clearInterval(callingRingtoneInterval);
     callingRingtoneInterval = null;
@@ -1241,8 +1244,9 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
   if (isAudioCallActive || isVideoCallActive) { socket.emit("call-reject", { toEmail: from.email }); return; }
   selectedContactEmail = from.email; currentCallPeerEmail = from.email;
   try {
+    // Vibrazione persistente per iOS
+    let vibInterval = setInterval(() => { if (navigator.vibrate) navigator.vibrate([300, 200]); }, 1000);
     startCallingRingtone();
-    vibrate([200, 100, 200]);
 
     const isVideo = mode === "video";
     stopCallingRingtone();
