@@ -36,6 +36,11 @@ let videoArea = null;
 let currentCallPeerEmail = null;
 let ringtoneAudio = null;
 
+// ---- TYPING ----
+let typingTimeout = null;
+let isTyping = false;
+let typingHideTimeout = null;
+
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
@@ -66,13 +71,95 @@ const chatBackBtn = document.getElementById("chat-back-btn");
 
 const chatPlaceholder = document.getElementById("chat-placeholder");
 const chatPanel = document.getElementById("chat-panel");
+const typingIndicator = document.getElementById("typing-indicator");
+
+const contactsEl = document.getElementById("contacts");
+const chatAreaEl = document.getElementById("chat-area");
 
 videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
 
 // =====================================================================
-// ==== NAVIGAZIONE STILE TELEGRAM =====================================
+// ==== SUONI ==========================================================
+// =====================================================================
+
+function playSound(type) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    if (type === "message") {
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.18);
+    }
+  } catch (e) {}
+}
+
+// ---- SQUILLO PERSISTENTE ----
+let callingRingtoneInterval = null;
+
+function startCallingRingtone() {
+  stopCallingRingtone();
+  // suona subito
+  _playCallBeep();
+  // poi ogni 2 secondi
+  callingRingtoneInterval = setInterval(_playCallBeep, 2000);
+}
+
+function stopCallingRingtone() {
+  if (callingRingtoneInterval) {
+    clearInterval(callingRingtoneInterval);
+    callingRingtoneInterval = null;
+  }
+}
+
+function _playCallBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // Melodia ZEUS - epica e tecnologica
+    // Note: E5, G5, B5, E6, B5, G5, E5 con ritmo deciso
+    const notes = [
+      { freq: 659.25, start: 0.0,  dur: 0.12 }, // E5
+      { freq: 783.99, start: 0.13, dur: 0.12 }, // G5
+      { freq: 987.77, start: 0.26, dur: 0.18 }, // B5
+      { freq: 1318.5, start: 0.45, dur: 0.25 }, // E6 - nota alta potente
+      { freq: 987.77, start: 0.72, dur: 0.12 }, // B5
+      { freq: 783.99, start: 0.85, dur: 0.12 }, // G5
+      { freq: 659.25, start: 0.98, dur: 0.30 }, // E5 - finale
+    ];
+    notes.forEach(({ freq, start, dur }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      // Aggiungi un po di distorsione per suono sintetizzatore
+      osc.type = "square";
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+      gain.gain.setValueAtTime(0.0, ctx.currentTime + start);
+      gain.gain.linearRampToValueAtTime(0.35, ctx.currentTime + start + 0.01);
+      gain.gain.setValueAtTime(0.35, ctx.currentTime + start + dur - 0.02);
+      gain.gain.linearRampToValueAtTime(0.0, ctx.currentTime + start + dur);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur + 0.05);
+    });
+  } catch (e) {}
+}
+
+// vibrazione su mobile
+function vibrate(pattern) {
+  if (navigator.vibrate) navigator.vibrate(pattern);
+}
+
+// =====================================================================
+// ==== NAVIGAZIONE MOBILE STILE TELEGRAM ==============================
 // =====================================================================
 
 function openChat(user) {
@@ -94,7 +181,14 @@ function openChat(user) {
     if (c.dataset.email === user.email) c.classList.add("selected");
   });
 
-  renderChatMessages(user.email);
+  // Mobile: nascondi sidebar, mostra chat
+  if (window.innerWidth <= 640) {
+    if (contactsEl) contactsEl.classList.add("hidden-mobile");
+    if (chatAreaEl) chatAreaEl.classList.add("visible-mobile");
+  }
+
+  // Carica storico messaggi dal server
+  loadMessageHistory(user.email);
 }
 
 function closeChat() {
@@ -104,14 +198,27 @@ function closeChat() {
   document.querySelectorAll(".contact").forEach((c) => c.classList.remove("selected"));
   chatTitleText.textContent = "Chat";
   if (chatHeaderAvatar) chatHeaderAvatar.style.display = "none";
+  if (typingIndicator) typingIndicator.textContent = "";
+
+  // Mobile: mostra sidebar, nascondi chat
+  if (contactsEl) contactsEl.classList.remove("hidden-mobile");
+  if (chatAreaEl) chatAreaEl.classList.remove("visible-mobile");
 }
 
 if (chatBackBtn) {
   chatBackBtn.addEventListener("click", () => closeChat());
 }
 
+// Gestione resize: se si allarga lo schermo ripristina layout desktop
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 640) {
+    if (contactsEl) contactsEl.classList.remove("hidden-mobile");
+    if (chatAreaEl) chatAreaEl.classList.remove("visible-mobile");
+  }
+});
+
 // =====================================================================
-// ==== STORICO MESSAGGI PER CONTATTO ==================================
+// ==== STORICO MESSAGGI (locale + server) =============================
 // =====================================================================
 
 const messagesByContact = {};
@@ -121,12 +228,91 @@ function getContactMessages(email) {
   return messagesByContact[email];
 }
 
-function renderChatMessages(email) {
-  if (!chatDiv) return;
-  chatDiv.innerHTML = "";
-  const msgs = getContactMessages(email);
-  msgs.forEach((m) => chatDiv.appendChild(m.el.cloneNode(true)));
-  chatDiv.scrollTop = chatDiv.scrollHeight;
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+  if (isToday) return time;
+  const date = d.toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" });
+  return `${date} ${time}`;
+}
+
+function buildMessageElement(fromUser, text, ts, isMe) {
+  const wrapper = document.createElement("div");
+  wrapper.classList.add("msg");
+  wrapper.classList.add(isMe ? "from-me" : "from-other");
+
+  if (!isMe) {
+    const senderEl = document.createElement("div");
+    senderEl.className = "msg-sender";
+    senderEl.textContent = fromUser.name || fromUser.email || "";
+    wrapper.appendChild(senderEl);
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+
+  // Controlla se è allegato, video, o testo normale
+  const attachMatch = text.match(/📎 allegato:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
+  const videoMatch = text.match(/🎦 video:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
+
+  if (videoMatch) {
+    bubble.textContent = "🎦 video-messaggio";
+    const videoBubble = document.createElement("div");
+    videoBubble.className = "video-bubble";
+    const videoEl = document.createElement("video");
+    videoEl.src = videoMatch[2];
+    videoEl.controls = true;
+    videoEl.playsInline = true;
+    videoBubble.appendChild(videoEl);
+    wrapper.appendChild(bubble);
+    wrapper.appendChild(videoBubble);
+  } else if (attachMatch) {
+    const link = document.createElement("a");
+    link.href = attachMatch[2];
+    link.textContent = "📎 " + attachMatch[1];
+    link.target = "_blank";
+    link.style.cssText = "color:#38bdf8;text-decoration:underline;";
+    bubble.appendChild(link);
+    wrapper.appendChild(bubble);
+  } else {
+    bubble.textContent = text;
+    wrapper.appendChild(bubble);
+  }
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "msg-time";
+  timeEl.textContent = formatTime(ts);
+  wrapper.appendChild(timeEl);
+
+  return wrapper;
+}
+
+async function loadMessageHistory(peerEmail) {
+  if (!currentUser || !peerEmail) return;
+  if (chatDiv) chatDiv.innerHTML = "";
+
+  try {
+    const res = await fetch(`/api/messages?emailA=${encodeURIComponent(currentUser.email)}&emailB=${encodeURIComponent(peerEmail)}&limit=100`);
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return;
+
+    messagesByContact[peerEmail] = [];
+
+    data.messages.forEach((m) => {
+      const isMe = m.from === currentUser.email;
+      const fromUser = m.fromUser || { email: m.from, name: m.from };
+      const el = buildMessageElement(fromUser, m.text, m.ts, isMe);
+      messagesByContact[peerEmail].push({ el });
+      if (chatDiv) chatDiv.appendChild(el);
+    });
+
+    if (chatDiv) chatDiv.scrollTop = chatDiv.scrollHeight;
+  } catch (err) {
+    console.error("Errore caricamento storico:", err);
+  }
 }
 
 function addMessageToContact(email, el) {
@@ -232,6 +418,55 @@ if (profileSaveBtn) {
     }
   });
 }
+
+// =====================================================================
+// ==== TYPING INDICATOR ===============================================
+// =====================================================================
+
+function sendTypingStart() {
+  if (!currentUser || !selectedContactEmail) return;
+  if (!isTyping) {
+    isTyping = true;
+    socket.emit("typing-start", { toEmail: selectedContactEmail });
+  }
+  if (typingTimeout) clearTimeout(typingTimeout);
+  typingTimeout = setTimeout(() => {
+    sendTypingStop();
+  }, 3000);
+}
+
+function sendTypingStop() {
+  if (!isTyping) return;
+  isTyping = false;
+  if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
+  if (currentUser && selectedContactEmail) {
+    socket.emit("typing-stop", { toEmail: selectedContactEmail });
+  }
+}
+
+if (input) {
+  input.addEventListener("input", () => sendTypingStart());
+  input.addEventListener("blur", () => sendTypingStop());
+}
+
+socket.on("typing-start", ({ from }) => {
+  if (!from) return;
+  if (selectedContactEmail === from.email) {
+    if (typingIndicator) typingIndicator.textContent = `${from.name} sta scrivendo...`;
+    if (typingHideTimeout) clearTimeout(typingHideTimeout);
+    typingHideTimeout = setTimeout(() => {
+      if (typingIndicator) typingIndicator.textContent = "";
+    }, 5000);
+  }
+});
+
+socket.on("typing-stop", ({ from }) => {
+  if (!from) return;
+  if (selectedContactEmail === from.email) {
+    if (typingIndicator) typingIndicator.textContent = "";
+    if (typingHideTimeout) { clearTimeout(typingHideTimeout); typingHideTimeout = null; }
+  }
+});
 
 // =====================================================================
 // ==== CONFERENZA (kMeet) =============================================
@@ -364,7 +599,7 @@ const micBtn = document.createElement("button");
 micBtn.id = "mic-btn";
 micBtn.textContent = "🎤";
 micBtn.title = "Tieni premuto per registrare un messaggio vocale";
-micBtn.style.cssText = "margin-left:8px;padding:4px 8px;cursor:pointer;";
+micBtn.style.cssText = "margin-left:4px;padding:4px 8px;cursor:pointer;background:transparent;border:none;font-size:18px;";
 
 window.addEventListener("DOMContentLoaded", () => {
   const inputBar = document.getElementById("input-bar");
@@ -439,9 +674,7 @@ async function loadUsers() {
       const avatarEl = document.createElement("div");
       if (u.avatar) {
         const img = document.createElement("img");
-        img.src = u.avatar;
-        img.alt = u.name;
-        img.className = "contact-avatar";
+        img.src = u.avatar; img.alt = u.name; img.className = "contact-avatar";
         avatarEl.appendChild(img);
       } else {
         avatarEl.className = "contact-avatar-placeholder";
@@ -479,9 +712,7 @@ async function loadUsers() {
       div.appendChild(avatarEl);
       div.appendChild(infoEl);
       div.appendChild(deleteBtn);
-
       div.addEventListener("click", () => openChat(u));
-
       contactsList.appendChild(div);
     });
 
@@ -562,54 +793,31 @@ socket.on("user-offline", (user) => { if (user && user.email) onlineUsers[user.e
 socket.on("chat-message", (msg) => {
   const div = document.createElement("div");
   div.classList.add("msg");
-  if (currentUser && msg.from.email === currentUser.email) {
-    div.classList.add("from-me");
-    div.textContent = `[CONFERENZA] TU: ${msg.text}`;
-  } else {
-    div.classList.add("from-other");
-    div.textContent = `[CONFERENZA] ${msg.from.name}: ${msg.text}`;
-  }
+  const isMe = currentUser && msg.from.email === currentUser.email;
+  div.classList.add(isMe ? "from-me" : "from-other");
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.textContent = isMe ? `[CONF] TU: ${msg.text}` : `[CONF] ${msg.from.name}: ${msg.text}`;
+  const timeEl = document.createElement("div");
+  timeEl.className = "msg-time";
+  timeEl.textContent = formatTime(msg.ts);
+  div.appendChild(bubble);
+  div.appendChild(timeEl);
   if (chatDiv) { chatDiv.appendChild(div); chatDiv.scrollTop = chatDiv.scrollHeight; }
 });
 
 socket.on("private-message", (msg) => {
-  const div = document.createElement("div");
-  div.classList.add("msg");
   const isMe = currentUser && msg.from.email === currentUser.email;
   const peerEmail = isMe ? (selectedContactEmail || "") : msg.from.email;
-  if (isMe) { div.classList.add("from-me"); } else { div.classList.add("from-other"); }
 
-  const text = msg.text || "";
-  const attachMatch = text.match(/📎 allegato:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
-  const videoMatch = text.match(/🎦 video:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
+  const el = buildMessageElement(msg.from, msg.text, msg.ts, isMe);
+  addMessageToContact(peerEmail, el);
 
-  if (videoMatch) {
-    const label = document.createElement("div");
-    label.textContent = isMe ? `(privato) TU: 🎦 video-messaggio` : `(privato) ${msg.from.name}: 🎦 video-messaggio`;
-    div.appendChild(label);
-    const bubble = document.createElement("div");
-    bubble.className = "video-bubble";
-    const videoEl = document.createElement("video");
-    videoEl.src = videoMatch[2];
-    videoEl.controls = true;
-    videoEl.playsInline = true;
-    bubble.appendChild(videoEl);
-    div.appendChild(bubble);
-  } else if (attachMatch) {
-    const label = document.createElement("span");
-    label.textContent = isMe ? `(privato) TU: 📎 ` : `(privato) ${msg.from.name}: 📎 `;
-    const link = document.createElement("a");
-    link.href = attachMatch[2];
-    link.textContent = attachMatch[1];
-    link.target = "_blank";
-    link.style.cssText = "color:#38bdf8;text-decoration:underline;";
-    div.appendChild(label);
-    div.appendChild(link);
-  } else {
-    div.textContent = isMe ? `(privato) TU: ${text}` : `(privato) ${msg.from.name}: ${text}`;
+  // Suono e vibrazione solo per messaggi ricevuti
+  if (!isMe) {
+    playSound("message");
+    vibrate(100);
   }
-
-  addMessageToContact(peerEmail, div);
 });
 
 socket.on("kmeet-invite", ({ from, roomUrl }) => {
@@ -627,6 +835,7 @@ if (sendBtn) {
     const text = input.value.trim();
     if (!text || !currentUser) return;
     if (!selectedContactEmail) { appendSystemMessage("Seleziona un contatto per inviare un messaggio."); input.value = ""; return; }
+    sendTypingStop();
     socket.emit("private-message", { toEmail: selectedContactEmail, text });
     input.value = "";
   });
@@ -823,20 +1032,43 @@ function sendVoiceMessage(blob) {
 micBtn.addEventListener("mousedown", () => startRecording());
 micBtn.addEventListener("mouseup", () => stopRecording());
 micBtn.addEventListener("mouseleave", () => { if (isRecording) stopRecording(); });
+// touch per mobile
+micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRecording(); });
+micBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
 
 socket.on("voice-message", (msg) => {
+  const isMe = currentUser && msg.from.email === currentUser.email;
   const div = document.createElement("div");
   div.classList.add("msg");
-  if (currentUser && msg.from.email === currentUser.email) { div.classList.add("from-me"); } else { div.classList.add("from-other"); }
-  const label = document.createElement("div");
-  label.textContent = `(privato) messaggio vocale da ${msg.from.name}`;
-  div.appendChild(label);
+  div.classList.add(isMe ? "from-me" : "from-other");
+
+  if (!isMe) {
+    const senderEl = document.createElement("div");
+    senderEl.className = "msg-sender";
+    senderEl.textContent = msg.from.name;
+    div.appendChild(senderEl);
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.textContent = "🎤 messaggio vocale";
+  div.appendChild(bubble);
+
   const audio = document.createElement("audio");
   audio.controls = true;
   audio.src = msg.audio;
+  audio.style.marginTop = "4px";
   div.appendChild(audio);
-  const peerEmail = currentUser && msg.from.email === currentUser.email ? selectedContactEmail : msg.from.email;
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "msg-time";
+  timeEl.textContent = formatTime(msg.ts || Date.now());
+  div.appendChild(timeEl);
+
+  const peerEmail = isMe ? selectedContactEmail : msg.from.email;
   if (peerEmail) addMessageToContact(peerEmail, div);
+
+  if (!isMe) { playSound("message"); vibrate(100); }
 });
 
 // =====================================================================
@@ -847,16 +1079,15 @@ let callLogDiv = document.getElementById("call-log");
 if (!callLogDiv) {
   callLogDiv = document.createElement("div");
   callLogDiv.id = "call-log";
-  callLogDiv.style.cssText = "font-size:11px;color:#9ca3af;max-height:80px;overflow-y:auto;padding:4px 8px 0 8px;border-top:1px solid rgba(15,23,42,0.6);box-sizing:border-box;";
+  callLogDiv.style.cssText = "font-size:11px;color:#9ca3af;max-height:60px;overflow-y:auto;padding:2px 8px 0 8px;border-top:1px solid rgba(15,23,42,0.6);box-sizing:border-box;flex-shrink:0;";
   const composer = document.getElementById("composer");
-  if (composer && chatDiv && chatDiv.parentNode) chatDiv.parentNode.insertBefore(callLogDiv, composer);
+  if (composer && composer.parentNode) composer.parentNode.insertBefore(callLogDiv, composer);
 }
 
 function appendSystemMessage(text) {
   const div = document.createElement("div");
-  div.classList.add("msg");
   div.textContent = text;
-  if (callLogDiv) { callLogDiv.appendChild(div); callLogDiv.scrollTop = callLogDiv.scrollHeight; while (callLogDiv.children.length > 50) callLogDiv.removeChild(callLogDiv.firstChild); }
+  if (callLogDiv) { callLogDiv.appendChild(div); callLogDiv.scrollTop = callLogDiv.scrollHeight; while (callLogDiv.children.length > 30) callLogDiv.removeChild(callLogDiv.firstChild); }
   else if (chatDiv) { chatDiv.appendChild(div); chatDiv.scrollTop = chatDiv.scrollHeight; }
 }
 
@@ -895,6 +1126,8 @@ function createPeerConnection() {
 }
 
 async function endCall(reason = "Chiamata terminata.") {
+  stopCallingRingtone();
+  if (ringtoneAudio) { ringtoneAudio.pause(); ringtoneAudio.currentTime = 0; }
   isAudioCallActive = false; isVideoCallActive = false; currentCallPeerEmail = null;
   if (peerConnection) { try { peerConnection.close(); } catch {} peerConnection = null; }
   if (localStream) { try { localStream.getTracks().forEach((t) => t.stop()); } catch {} localStream = null; }
@@ -917,6 +1150,7 @@ async function startAudioCall() {
     await peerConnection.setLocalDescription(offer);
     socket.emit("call-offer", { toEmail: currentCallPeerEmail, offer: peerConnection.localDescription, mode: "audio" });
     isAudioCallActive = true;
+    startCallingRingtone();
     appendSystemMessage(`Chiamata audio verso ${currentCallPeerEmail}...`);
   } catch (err) { await endCall("Chiamata audio interrotta per errore."); }
 }
@@ -934,6 +1168,7 @@ async function startVideoCall() {
     await peerConnection.setLocalDescription(offer);
     socket.emit("call-offer", { toEmail: currentCallPeerEmail, offer: peerConnection.localDescription, mode: "video" });
     isVideoCallActive = true;
+    startCallingRingtone();
     appendSystemMessage(`Videochiamata verso ${currentCallPeerEmail}...`);
   } catch (err) { await endCall("Videochiamata interrotta per errore."); }
 }
@@ -946,11 +1181,12 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
   if (isAudioCallActive || isVideoCallActive) { socket.emit("call-reject", { toEmail: from.email }); return; }
   selectedContactEmail = from.email; currentCallPeerEmail = from.email;
   try {
-    if (!ringtoneAudio) { ringtoneAudio = new Audio("ringtone.mp3"); ringtoneAudio.loop = true; }
-    try { await ringtoneAudio.play(); } catch (e) {}
+    startCallingRingtone();
+    vibrate([200, 100, 200]);
+
     const isVideo = mode === "video";
+    stopCallingRingtone();
     const accept = confirm(`Chiamata ${isVideo ? "video" : "audio"} in arrivo da ${from.name}.\nVuoi rispondere?`);
-    if (ringtoneAudio) { ringtoneAudio.pause(); ringtoneAudio.currentTime = 0; }
     if (!accept) { socket.emit("call-reject", { toEmail: from.email }); return; }
     const stream = isVideo ? await startLocalMediaWithVideo() : await startLocalAudio();
     createPeerConnection();
@@ -966,6 +1202,7 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
 });
 
 socket.on("call-answer", async ({ from, answer, mode }) => {
+  stopCallingRingtone();
   try { if (!peerConnection) return; await peerConnection.setRemoteDescription(answer); appendSystemMessage(`${from?.email} ha risposto (${mode}).`); }
   catch (err) { appendSystemMessage("Errore risposta chiamata."); }
 });
