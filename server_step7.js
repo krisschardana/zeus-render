@@ -1,4 +1,4 @@
-// server_step7.js
+// server_step7.js — ZEUS Chat — Telegram-style universal edition
 const express = require("express");
 const http = require("http");
 const path = require("path");
@@ -19,10 +19,10 @@ const io = new Server(server, {
   },
   transports: ['websocket', 'polling'],
   allowEIO3: true,
-  pingTimeout: 60000,       // aspetta 60s prima di dichiarare disconnessione
-  pingInterval: 25000,      // ping ogni 25s per tenere viva la connessione
+  pingTimeout: 60000,
+  pingInterval: 25000,
   upgradeTimeout: 30000,
-  maxHttpBufferSize: 50e6   // 50MB per file grandi
+  maxHttpBufferSize: 50e6
 });
 
 // CORS per tutte le route
@@ -152,10 +152,8 @@ function getMessages(emailA, emailB, limit = 100) {
 loadMessagesFromFile();
 
 // ---- MAPPA SOCKET PER EMAIL ----
-// Supporta multiple sessioni per stesso utente (es. tab multipli)
-const onlineSocketsByEmail = {};  // email -> socketId (ultimo attivo)
-const socketsByEmail = {};        // email -> Set di socketId
-
+const onlineSocketsByEmail = {};
+const socketsByEmail = {};
 const pendingOtps = {};
 const typingTimers = {};
 
@@ -188,40 +186,89 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-app.post("/api/upload", upload.single("file"), async (req, res) => {
+// ---- TROVA FFMPEG ----
+const FFMPEG_PATHS = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "ffmpeg"];
+let ffmpegPath = null;
+
+function findFfmpeg() {
+  return new Promise((resolve) => {
+    let checked = 0;
+    if (FFMPEG_PATHS.length === 0) { resolve(null); return; }
+    FFMPEG_PATHS.forEach(p => {
+      execFile(p, ["-version"], { timeout: 5000 }, (err) => {
+        checked++;
+        if (!err && !ffmpegPath) { ffmpegPath = p; console.log("ffmpeg trovato:", p); }
+        if (checked === FFMPEG_PATHS.length && !ffmpegPath) {
+          console.log("ffmpeg non trovato sul sistema.");
+          resolve(null);
+        } else if (ffmpegPath) resolve(ffmpegPath);
+      });
+    });
+  });
+}
+
+findFfmpeg();
+
+// ---- CONVERSIONE ASINCRONA WEBM -> MP4 (NON BLOCCA LA RISPOSTA) ----
+function convertWebmToMp4Async(inputPath, outputPath) {
+  if (!ffmpegPath) {
+    console.log("Conversione saltata: ffmpeg non disponibile");
+    return;
+  }
+  execFile(ffmpegPath, [
+    "-i", inputPath,
+    "-c:v", "libx264",
+    "-c:a", "aac",
+    "-movflags", "+faststart",
+    "-y", outputPath
+  ], { timeout: 120000 }, (err) => {
+    if (err) {
+      console.log("Conversione ffmpeg fallita:", err.message);
+      return;
+    }
+    try { fs.unlinkSync(inputPath); } catch(e) {}
+    console.log("Conversione MP4 completata:", outputPath);
+  });
+}
+
+// ---- UPLOAD ENDPOINT ----
+app.post("/api/upload", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Nessun file caricato." });
 
-  const isWebm = req.file.mimetype === "video/webm" || req.file.originalname.includes(".webm");
-
-  if (isWebm) {
-    const inputPath = req.file.path;
-    const outputName = req.file.filename.replace(".webm", ".mp4");
-    const outputPath = path.join(UPLOADS_DIR, outputName);
-    const ffmpegPaths = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "ffmpeg"];
-
-    for (const ffPath of ffmpegPaths) {
-      try {
-        await new Promise((resolve, reject) => {
-          execFile(ffPath, [
-            "-i", inputPath,
-            "-c:v", "libx264", "-c:a", "aac",
-            "-movflags", "+faststart", "-y", outputPath
-          ], { timeout: 60000 }, (err) => { if (err) reject(err); else resolve(); });
-        });
-        try { fs.unlinkSync(inputPath); } catch(e) {}
-        const publicUrl = "/uploads/" + outputName;
-        console.log("Video convertito MP4:", publicUrl);
-        return res.json({ ok: true, url: publicUrl, originalName: req.file.originalname, size: req.file.size, mimeType: "video/mp4" });
-      } catch (e) { continue; }
-    }
-    console.log("ffmpeg non trovato, mando WebM:", req.file.filename);
-  }
+  const isWebm = req.file.mimetype === "video/webm" ||
+    req.file.originalname.toLowerCase().includes(".webm") ||
+    (req.file.mimetype && req.file.mimetype.includes("webm"));
 
   const publicUrl = "/uploads/" + req.file.filename;
+
+  if (isWebm && ffmpegPath) {
+    // Risponde SUBITO con URL WebM — la conversione avviene in background
+    const outputName = req.file.filename.replace(/\.webm$/i, "") + "-conv.mp4";
+    const outputPath = path.join(UPLOADS_DIR, outputName);
+
+    // Avvia conversione in background (non blocca)
+    convertWebmToMp4Async(req.file.path, outputPath);
+
+    console.log("File WebM ricevuto, risposta immediata:", publicUrl);
+    return res.json({
+      ok: true,
+      url: publicUrl,
+      originalName: req.file.originalname,
+      size: req.file.size,
+      mimeType: req.file.mimetype
+    });
+  }
+
   console.log("File caricato:", req.file.originalname, "->", publicUrl);
-  return res.json({ ok: true, url: publicUrl, originalName: req.file.originalname, size: req.file.size, mimeType: req.file.mimetype });
+  return res.json({
+    ok: true,
+    url: publicUrl,
+    originalName: req.file.originalname,
+    size: req.file.size,
+    mimeType: req.file.mimetype
+  });
 });
 
 // ---- LOGIN ----
@@ -316,7 +363,6 @@ function emitToUser(email, event, data) {
 io.on("connection", (socket) => {
   console.log("Utente connesso:", socket.id);
 
-  // Heartbeat: risponde al ping del client per tenere viva la connessione
   socket.on("ping-client", () => {
     socket.emit("pong-server", { ts: Date.now() });
   });
@@ -325,12 +371,9 @@ io.on("connection", (socket) => {
     if (!user || !user.email) return;
     user.email = normalizeEmail(user.email);
     socket.data.user = user;
-
-    // Registra socket
     onlineSocketsByEmail[user.email] = socket.id;
     if (!socketsByEmail[user.email]) socketsByEmail[user.email] = new Set();
     socketsByEmail[user.email].add(socket.id);
-
     io.emit("user-online", user);
     console.log("Utente online:", user.email, "socket:", socket.id);
   });
@@ -347,11 +390,7 @@ io.on("connection", (socket) => {
     const toEmailNorm = normalizeEmail(toEmail);
     const saved = saveMessage(from.email, toEmailNorm, text, "private");
     const payload = { from, text, ts: saved.ts };
-
-    // Invia a tutti i socket del destinatario
     emitToUser(toEmailNorm, "private-message", payload);
-
-    // Invia conferma al mittente (tutti i suoi socket)
     emitToUser(from.email, "private-message", payload);
   });
 
@@ -383,6 +422,8 @@ io.on("connection", (socket) => {
     emitToUser(normalizeEmail(toEmail), "kmeet-invite", { from, roomUrl, ts: Date.now() });
   });
 
+  // ---- VOICE MESSAGE ----
+  // Supporta sia il vecchio formato base64 che il nuovo formato (testo con URL)
   socket.on("voice-message", (payload) => {
     const from = socket.data.user;
     if (!from) return;
@@ -435,21 +476,14 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     const user = socket.data.user;
     console.log("Disconnesso:", socket.id, "motivo:", reason);
-
     if (user && user.email) {
-      // Rimuovi questo socket dalla lista
-      if (socketsByEmail[user.email]) {
-        socketsByEmail[user.email].delete(socket.id);
-      }
-
-      // Se non ha altri socket attivi, è offline
+      if (socketsByEmail[user.email]) socketsByEmail[user.email].delete(socket.id);
       if (!socketsByEmail[user.email] || socketsByEmail[user.email].size === 0) {
         delete onlineSocketsByEmail[user.email];
         delete socketsByEmail[user.email];
         io.emit("user-offline", user);
         console.log("Utente offline:", user.email);
       } else {
-        // Ha altri socket attivi, aggiorna il principale
         const remaining = [...socketsByEmail[user.email]];
         onlineSocketsByEmail[user.email] = remaining[remaining.length - 1];
         console.log("Utente ancora online su altro socket:", user.email);
