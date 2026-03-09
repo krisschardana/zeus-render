@@ -1,8 +1,19 @@
 // =====================================================================
-// ZEUS Chat — app.js — Telegram-style universal edition
+// ZEUS Chat — app.js — Universal edition (iOS + Android + Desktop)
 // =====================================================================
 
-// ---- CONNESSIONE SOCKET con riconnessione automatica ----
+// ---- SALVATAGGIO SESSIONE — no relogin ----
+function saveSession(user) {
+  try { localStorage.setItem("zeus_user", JSON.stringify(user)); } catch(e) {}
+}
+function loadSession() {
+  try { const s = localStorage.getItem("zeus_user"); return s ? JSON.parse(s) : null; } catch(e) { return null; }
+}
+function clearSession() {
+  try { localStorage.removeItem("zeus_user"); } catch(e) {}
+}
+
+// ---- CONNESSIONE SOCKET ----
 const socket = io({
   transports: ['websocket', 'polling'],
   reconnection: true,
@@ -26,11 +37,7 @@ socket.on("reconnect", () => {
   console.log("Riconnesso al server");
   if (currentUser) {
     socket.emit("set-user", currentUser);
-    // Ricarica chat aperta
-    if (selectedContactEmail) {
-      loadMessageHistory(selectedContactEmail);
-    }
-    // Invia messaggi in coda
+    if (selectedContactEmail) loadMessageHistory(selectedContactEmail);
     while (offlineQueue.length > 0) {
       const queued = offlineQueue.shift();
       socket.emit("private-message", queued);
@@ -71,16 +78,25 @@ function unlockAudioContext() {
   } catch(e) {}
 }
 
-document.addEventListener('touchstart', unlockAudioContext, { once: false, passive: true });
-document.addEventListener('click', unlockAudioContext, { once: false });
-document.addEventListener('touchend', unlockAudioContext, { once: false, passive: true });
+// Sblocca su qualsiasi interazione utente
+document.addEventListener('touchstart', unlockAudioContext, { passive: true });
+document.addEventListener('touchend', unlockAudioContext, { passive: true });
+document.addEventListener('click', unlockAudioContext);
 
+// ---- Forza resume AudioContext su ogni tap (iOS) ----
+document.addEventListener('touchstart', () => {
+  if (globalAudioCtx && globalAudioCtx.state === 'suspended') globalAudioCtx.resume();
+}, { passive: true });
+
+// =====================================================================
+// ==== VARIABILI GLOBALI ==============================================
+// =====================================================================
 let currentUser = null;
 let selectedContactEmail = null;
 let onlineUsers = {};
 
-// ---- BADGE MESSAGGI NON LETTI ----
-const unreadCounts = {}; // email -> numero non letti
+// ---- BADGE ----
+const unreadCounts = {};
 
 // ---- CONFERENZA ----
 let conferenceMode = false;
@@ -88,7 +104,7 @@ let conferenceIframe = null;
 let isKmeetOn = false;
 const KMEET_URL = "https://kmeet.infomaniak.com/tiknhcsuxmdxxnpd";
 
-// ---- AUDIO / VOCALI ----
+// ---- AUDIO VOCALI ----
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
@@ -129,32 +145,39 @@ let typingTimeout = null;
 let isTyping = false;
 let typingHideTimeout = null;
 
-// ---- NOTIFICHE BROWSER ----
+// ---- NOTIFICHE ----
 let notificationsEnabled = false;
 
-// ---- WEBRTC CONFIG CON TURN ----
+// ---- WEBRTC CONFIG — TURN affidabili ----
 const rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" },
+    // TURN Metered — affidabile e gratuito
     {
-      urls: "turn:openrelay.metered.ca:80",
+      urls: "turn:a.relay.metered.ca:80",
       username: "openrelayproject",
       credential: "openrelayproject"
     },
     {
-      urls: "turn:openrelay.metered.ca:443",
+      urls: "turn:a.relay.metered.ca:80?transport=tcp",
       username: "openrelayproject",
       credential: "openrelayproject"
     },
     {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      urls: "turn:a.relay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    },
+    {
+      urls: "turns:a.relay.metered.ca:443?transport=tcp",
       username: "openrelayproject",
       credential: "openrelayproject"
     }
   ],
-  iceCandidatePoolSize: 10
+  iceCandidatePoolSize: 10,
+  bundlePolicy: "max-bundle",
+  rtcpMuxPolicy: "require"
 };
 
 // =====================================================================
@@ -274,24 +297,20 @@ function vibrate(pattern) {
 }
 
 // =====================================================================
-// ==== NOTIFICHE BROWSER ==============================================
+// ==== NOTIFICHE ======================================================
 // =====================================================================
 
 function requestNotificationPermission() {
   if (!("Notification" in window)) return;
   if (Notification.permission === "granted") { notificationsEnabled = true; return; }
   if (Notification.permission !== "denied") {
-    Notification.requestPermission().then(permission => {
-      notificationsEnabled = permission === "granted";
-    });
+    Notification.requestPermission().then(p => { notificationsEnabled = p === "granted"; });
   }
 }
 
-function showBrowserNotification(title, body, icon) {
+function showBrowserNotification(title, body) {
   if (!notificationsEnabled || document.hasFocus()) return;
-  try {
-    new Notification(title, { body, icon: icon || "/icons/icon-192.png", badge: "/icons/icon-192.png" });
-  } catch(e) {}
+  try { new Notification(title, { body, icon: "/icons/icon-192.png" }); } catch(e) {}
 }
 
 // =====================================================================
@@ -312,7 +331,6 @@ function clearUnread(email) {
 }
 
 function updateUnreadUI() {
-  // Aggiorna badge su ogni contatto
   document.querySelectorAll(".contact").forEach(c => {
     const email = c.dataset.email;
     let badge = c.querySelector(".unread-badge");
@@ -329,10 +347,8 @@ function updateUnreadUI() {
       if (badge) badge.remove();
     }
   });
-
-  // Aggiorna titolo pagina
-  const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
-  document.title = totalUnread > 0 ? `(${totalUnread}) ZEUS Chat` : "ZEUS Chat";
+  const total = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+  document.title = total > 0 ? `(${total}) ZEUS Chat` : "ZEUS Chat";
 }
 
 // =====================================================================
@@ -401,6 +417,36 @@ function formatTime(ts) {
   return d.toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" }) + " " + time;
 }
 
+// ---- PLAY AUDIO iOS SAFE ----
+function playAudioSafe(audioEl) {
+  if (!audioEl) return;
+  // Sblocca AudioContext prima
+  unlockAudioContext();
+  if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+    globalAudioCtx.resume().then(() => {
+      audioEl.play().catch(e => console.log("Audio play err:", e));
+    });
+  } else {
+    audioEl.play().catch(e => console.log("Audio play err:", e));
+  }
+}
+
+// ---- PLAY VIDEO iOS SAFE ----
+function playVideoSafe(videoEl) {
+  if (!videoEl) return;
+  videoEl.muted = false;
+  videoEl.playsInline = true;
+  videoEl.setAttribute("playsinline", "");
+  videoEl.setAttribute("webkit-playsinline", "");
+  videoEl.play().catch(() => {
+    // Su iOS prova muted prima poi unmute
+    videoEl.muted = true;
+    videoEl.play().then(() => {
+      videoEl.muted = false;
+    }).catch(e => console.log("Video play err:", e));
+  });
+}
+
 function buildMessageElement(fromUser, text, ts, isMe) {
   const wrapper = document.createElement("div");
   wrapper.classList.add("msg", isMe ? "from-me" : "from-other");
@@ -416,119 +462,181 @@ function buildMessageElement(fromUser, text, ts, isMe) {
   const attachMatch = text.match(/📎 allegato:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
   const videoMatch = text.match(/🎦 video:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
   const audioMatch = text.match(/🎤 vocale:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
+  const imgMatch = text.match(/🖼 immagine:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
 
   if (videoMatch) {
-    // Bolla video circolare stile Telegram
+    // ---- VIDEO BOLLA CIRCOLARE — iOS SAFE ----
     const videoBubble = document.createElement("div");
     videoBubble.className = "video-bubble";
-    videoBubble.style.cssText = "width:200px;height:200px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;background:#020617;box-shadow:0 0 0 3px rgba(59,130,246,0.6);position:relative;cursor:pointer;";
+    videoBubble.style.cssText = "width:200px;height:200px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;background:#020617;box-shadow:0 0 0 3px rgba(59,130,246,0.6);position:relative;cursor:pointer;-webkit-tap-highlight-color:transparent;";
+
     const videoEl = document.createElement("video");
-    videoEl.controls = false;
     videoEl.playsInline = true;
     videoEl.setAttribute("playsinline", "");
     videoEl.setAttribute("webkit-playsinline", "");
+    videoEl.setAttribute("x-webkit-airplay", "allow");
+    videoEl.muted = false;
     videoEl.preload = "metadata";
+    videoEl.controls = false;
     videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;";
+
+    // Prova URL originale + conversione mp4
     const urlPath = videoMatch[2];
-    const urlMp4 = urlPath.replace(".webm", ".mp4");
-    // Prova mp4 poi webm
-    const src1 = document.createElement("source"); src1.src = urlMp4; src1.type = "video/mp4";
-    const src2 = document.createElement("source"); src2.src = urlPath; src2.type = "video/webm";
-    videoEl.appendChild(src1); videoEl.appendChild(src2);
-    // Overlay play button
+    const urlMp4 = urlPath.replace(/\.webm$/i, "-conv.mp4");
+
+    // Su iOS usa mp4, altrove webm
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    if (isIOS) {
+      videoEl.src = urlMp4;
+      videoEl.addEventListener("error", () => { videoEl.src = urlPath; });
+    } else {
+      const src1 = document.createElement("source"); src1.src = urlPath; src1.type = "video/webm";
+      const src2 = document.createElement("source"); src2.src = urlMp4; src2.type = "video/mp4";
+      videoEl.appendChild(src1);
+      videoEl.appendChild(src2);
+    }
+
+    // Overlay play
     const playOverlay = document.createElement("div");
-    playOverlay.style.cssText = "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:50px;height:50px;background:rgba(0,0,0,0.5);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px;pointer-events:none;transition:opacity 0.2s;";
+    playOverlay.style.cssText = "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:54px;height:54px;background:rgba(0,0,0,0.55);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;pointer-events:none;transition:opacity 0.2s;";
     playOverlay.textContent = "▶";
+
     videoBubble.appendChild(videoEl);
     videoBubble.appendChild(playOverlay);
-    // Toggle play/pause al click
-    videoBubble.addEventListener("click", () => {
+
+    // Click/tap handler
+    let tapping = false;
+    videoBubble.addEventListener("touchstart", () => { tapping = true; }, { passive: true });
+    videoBubble.addEventListener("touchend", (e) => {
+      if (!tapping) return;
+      tapping = false;
+      e.preventDefault();
       if (videoEl.paused) {
-        videoEl.controls = true;
-        videoEl.play();
+        playVideoSafe(videoEl);
         playOverlay.style.opacity = "0";
       } else {
         videoEl.pause();
-        videoEl.controls = false;
+        playOverlay.style.opacity = "1";
+      }
+    }, { passive: false });
+    videoBubble.addEventListener("click", () => {
+      if (videoEl.paused) {
+        playVideoSafe(videoEl);
+        playOverlay.style.opacity = "0";
+      } else {
+        videoEl.pause();
         playOverlay.style.opacity = "1";
       }
     });
     videoEl.addEventListener("ended", () => {
-      videoEl.controls = false;
       playOverlay.style.opacity = "1";
     });
+    videoEl.addEventListener("pause", () => {
+      playOverlay.style.opacity = "1";
+    });
+
     wrapper.appendChild(videoBubble);
+
   } else if (audioMatch) {
-    // Bolla audio stile Telegram
-    bubble.style.cssText += "min-width:200px;";
+    // ---- AUDIO BOLLA — iOS SAFE ----
+    bubble.style.cssText += "min-width:200px;max-width:280px;";
     const audioRow = document.createElement("div");
     audioRow.style.cssText = "display:flex;align-items:center;gap:8px;";
+
     const playBtn = document.createElement("button");
-    playBtn.style.cssText = "width:36px;height:36px;border-radius:50%;background:#2563eb;border:none;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;";
+    playBtn.style.cssText = "width:40px;height:40px;border-radius:50%;background:#2563eb;border:none;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;-webkit-tap-highlight-color:transparent;";
     playBtn.textContent = "▶";
+
     const audioEl = document.createElement("audio");
     audioEl.src = audioMatch[2];
     audioEl.preload = "metadata";
     audioEl.setAttribute("playsinline", "");
+
     const waveDiv = document.createElement("div");
     waveDiv.style.cssText = "flex:1;height:28px;display:flex;align-items:center;gap:2px;";
-    // Waveform decorativa
     for (let i = 0; i < 20; i++) {
       const bar = document.createElement("div");
       const h = 4 + Math.random() * 20;
       bar.style.cssText = `width:3px;height:${h}px;background:rgba(148,163,184,0.5);border-radius:2px;flex-shrink:0;`;
       waveDiv.appendChild(bar);
     }
+
     const durationSpan = document.createElement("span");
-    durationSpan.style.cssText = "font-size:11px;color:#9ca3af;white-space:nowrap;";
+    durationSpan.style.cssText = "font-size:11px;color:#9ca3af;white-space:nowrap;min-width:32px;";
     durationSpan.textContent = "0:00";
+
     audioEl.addEventListener("loadedmetadata", () => {
       if (audioEl.duration && isFinite(audioEl.duration)) {
         const m = Math.floor(audioEl.duration / 60);
         const s = Math.floor(audioEl.duration % 60);
-        durationSpan.textContent = `${m}:${s.toString().padStart(2,"0")}`;
+        durationSpan.textContent = `${m}:${s.toString().padStart(2, "0")}`;
       }
     });
     audioEl.addEventListener("timeupdate", () => {
       if (audioEl.duration && isFinite(audioEl.duration)) {
         const m = Math.floor(audioEl.currentTime / 60);
         const s = Math.floor(audioEl.currentTime % 60);
-        durationSpan.textContent = `${m}:${s.toString().padStart(2,"0")}`;
+        durationSpan.textContent = `${m}:${s.toString().padStart(2, "0")}`;
       }
     });
-    playBtn.addEventListener("click", () => {
-      if (audioEl.paused) { audioEl.play(); playBtn.textContent = "⏸"; }
-      else { audioEl.pause(); playBtn.textContent = "▶"; }
-    });
     audioEl.addEventListener("ended", () => { playBtn.textContent = "▶"; });
+
+    // Play button — iOS safe con unlock
+    playBtn.addEventListener("touchend", (e) => {
+      e.preventDefault();
+      unlockAudioContext();
+      if (audioEl.paused) {
+        playAudioSafe(audioEl);
+        playBtn.textContent = "⏸";
+      } else {
+        audioEl.pause();
+        playBtn.textContent = "▶";
+      }
+    }, { passive: false });
+
+    playBtn.addEventListener("click", () => {
+      unlockAudioContext();
+      if (audioEl.paused) {
+        playAudioSafe(audioEl);
+        playBtn.textContent = "⏸";
+      } else {
+        audioEl.pause();
+        playBtn.textContent = "▶";
+      }
+    });
+
     audioRow.appendChild(playBtn);
     audioRow.appendChild(waveDiv);
     audioRow.appendChild(durationSpan);
     bubble.appendChild(audioRow);
     wrapper.appendChild(bubble);
+
+  } else if (imgMatch) {
+    const img = document.createElement("img");
+    img.src = imgMatch[2];
+    img.alt = imgMatch[1];
+    img.style.cssText = "max-width:220px;max-height:220px;border-radius:12px;display:block;cursor:pointer;";
+    img.addEventListener("click", () => window.open(imgMatch[2], "_blank"));
+    bubble.appendChild(img);
+    wrapper.appendChild(bubble);
+
   } else if (attachMatch) {
     const link = document.createElement("a");
-    link.href = attachMatch[2]; link.textContent = "📎 " + attachMatch[1]; link.target = "_blank";
+    link.href = attachMatch[2];
+    link.textContent = "📎 " + attachMatch[1];
+    link.target = "_blank";
     link.style.cssText = "color:#38bdf8;text-decoration:underline;";
-    bubble.appendChild(link); wrapper.appendChild(bubble);
+    bubble.appendChild(link);
+    wrapper.appendChild(bubble);
+
   } else {
-    // Controlla se è un'immagine
-    const imgMatch = text.match(/🖼 immagine:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
-    if (imgMatch) {
-      const img = document.createElement("img");
-      img.src = imgMatch[2];
-      img.alt = imgMatch[1];
-      img.style.cssText = "max-width:220px;max-height:220px;border-radius:12px;display:block;cursor:pointer;";
-      img.addEventListener("click", () => window.open(imgMatch[2], "_blank"));
-      bubble.appendChild(img);
-      wrapper.appendChild(bubble);
-    } else {
-      bubble.textContent = text; wrapper.appendChild(bubble);
-    }
+    bubble.textContent = text;
+    wrapper.appendChild(bubble);
   }
 
   const timeEl = document.createElement("div");
-  timeEl.className = "msg-time"; timeEl.textContent = formatTime(ts);
+  timeEl.className = "msg-time";
+  timeEl.textContent = formatTime(ts);
   wrapper.appendChild(timeEl);
   return wrapper;
 }
@@ -626,6 +734,7 @@ if (profileSaveBtn) {
       const data = await res.json().catch(() => null);
       if (!data || !data.ok) { appendSystemMessage("Errore salvataggio profilo."); return; }
       currentUser = { ...currentUser, name, phone, address, avatar };
+      saveSession(currentUser);
       appendSystemMessage("Profilo aggiornato ✅");
       closeProfileModal();
       loadUsers();
@@ -764,39 +873,33 @@ conferenceBtn.addEventListener("click", () => {
 });
 
 // =====================================================================
-// ==== MICROFONO — HOLD TO RECORD STILE TELEGRAM ======================
+// ==== MICROFONO — HOLD TO RECORD =====================================
 // =====================================================================
 
 const micBtn = document.createElement("button");
 micBtn.id = "mic-btn";
 micBtn.title = "Tieni premuto per vocale";
-micBtn.style.cssText = "width:36px;height:36px;border-radius:50%;background:transparent;border:none;font-size:20px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background 0.15s,transform 0.1s;touch-action:none;flex-shrink:0;position:relative;";
+micBtn.style.cssText = "width:36px;height:36px;border-radius:50%;background:transparent;border:none;font-size:20px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background 0.15s,transform 0.1s;touch-action:none;flex-shrink:0;position:relative;-webkit-tap-highlight-color:transparent;";
 micBtn.innerHTML = "🎤";
 
-// Overlay timer vocale
 const micTimerOverlay = document.createElement("div");
-micTimerOverlay.style.cssText = "display:none;position:absolute;bottom:38px;left:50%;transform:translateX(-50%);background:rgba(37,99,235,0.95);color:#fff;border-radius:20px;padding:4px 12px;font-size:12px;white-space:nowrap;pointer-events:none;z-index:100;";
+micTimerOverlay.style.cssText = "display:none;position:absolute;bottom:42px;left:50%;transform:translateX(-50%);background:rgba(37,99,235,0.95);color:#fff;border-radius:20px;padding:4px 12px;font-size:12px;white-space:nowrap;pointer-events:none;z-index:100;";
 micTimerOverlay.textContent = "● 0:00  ← scorri per annullare";
 
-// Stato swipe annulla
 let micStartX = 0;
 let micCancelled = false;
-let micLocked = false; // registrazione bloccata (mani libere)
 
 function initAudioMimeType() {
   if (typeof MediaRecorder === "undefined") return;
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/ogg",
-    "audio/mp4",
-    "audio/aac",
-    ""
-  ];
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  // Su iOS preferisce mp4/aac
+  const candidates = isIOS
+    ? ["audio/mp4", "audio/aac", "audio/webm;codecs=opus", "audio/webm", ""]
+    : ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4", ""];
   for (const type of candidates) {
     if (!type || (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type))) {
       supportedAudioMimeType = type || null;
+      console.log("Audio MIME:", supportedAudioMimeType);
       return;
     }
   }
@@ -804,24 +907,24 @@ function initAudioMimeType() {
 
 function initVideoMimeType() {
   if (typeof MediaRecorder === "undefined") return;
-  // Su Android Chrome WebM è più affidabile, su Safari MP4
-  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-  const candidates = isSafari
-    ? ["video/mp4;codecs=h264,aac", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm", ""]
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const candidates = isIOS
+    ? ["video/mp4;codecs=h264,aac", "video/mp4", "video/webm", ""]
     : ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4", ""];
   for (const type of candidates) {
     if (!type || (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type))) {
       supportedVideoMimeType = type || null;
+      console.log("Video MIME:", supportedVideoMimeType);
       return;
     }
   }
 }
 
-function setMicRecordingUI(recording, locked) {
+function setMicRecordingUI(recording) {
   if (recording) {
     micBtn.style.background = "radial-gradient(circle,#ef4444,#b91c1c)";
     micBtn.style.transform = "scale(1.2)";
-    micBtn.innerHTML = locked ? "🔴" : "⏺";
+    micBtn.innerHTML = "⏺";
     micTimerOverlay.style.display = "block";
   } else {
     micBtn.style.background = "transparent";
@@ -839,7 +942,7 @@ function startRecordingTimer() {
     const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
     const m = Math.floor(elapsed / 60);
     const s = elapsed % 60;
-    micTimerOverlay.textContent = `● ${m}:${s.toString().padStart(2,"0")}  ← scorri per annullare`;
+    micTimerOverlay.textContent = `● ${m}:${s.toString().padStart(2, "0")}  ← scorri per annullare`;
   }, 500);
 }
 
@@ -865,12 +968,8 @@ async function startVoiceRecording() {
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       isRecording = false;
-      setMicRecordingUI(false, false);
-      if (micCancelled) {
-        audioChunks = [];
-        appendSystemMessage("Vocale annullato.");
-        return;
-      }
+      setMicRecordingUI(false);
+      if (micCancelled) { audioChunks = []; appendSystemMessage("Vocale annullato."); return; }
       if (!audioChunks.length) { appendSystemMessage("Nessun audio registrato."); return; }
       const mimeType = supportedAudioMimeType || "audio/webm";
       const blob = new Blob(audioChunks, { type: mimeType });
@@ -879,14 +978,14 @@ async function startVoiceRecording() {
     };
     mediaRecorder.start(250);
     isRecording = true;
-    setMicRecordingUI(true, false);
+    setMicRecordingUI(true);
     startRecordingTimer();
     vibrate(50);
   } catch(err) {
     isRecording = false;
-    setMicRecordingUI(false, false);
+    setMicRecordingUI(false);
     if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-      appendSystemMessage("⚠️ Permesso microfono negato. Abilita il microfono nelle impostazioni del browser.");
+      appendSystemMessage("⚠️ Permesso microfono negato. Abilita il microfono nelle impostazioni.");
     } else {
       appendSystemMessage("Errore microfono: " + err.message);
     }
@@ -897,12 +996,10 @@ function stopVoiceRecording(cancelled) {
   if (!isRecording || !mediaRecorder) return;
   micCancelled = !!cancelled;
   try {
-    if (mediaRecorder.state === "recording" || mediaRecorder.state === "paused") {
-      mediaRecorder.stop();
-    }
+    if (mediaRecorder.state === "recording" || mediaRecorder.state === "paused") mediaRecorder.stop();
   } catch(e) {
     isRecording = false;
-    setMicRecordingUI(false, false);
+    setMicRecordingUI(false);
   }
 }
 
@@ -910,7 +1007,8 @@ async function uploadAndSendVoice(blob, mimeType) {
   if (!blob || !currentUser || !selectedContactEmail) return;
   try {
     appendSystemMessage("Invio vocale...");
-    const ext = mimeType.includes("ogg") ? ".ogg" : mimeType.includes("mp4") || mimeType.includes("aac") ? ".m4a" : ".webm";
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const ext = (mimeType.includes("mp4") || mimeType.includes("aac")) ? ".m4a" : mimeType.includes("ogg") ? ".ogg" : ".webm";
     const fileName = `voice-${Date.now()}${ext}`;
     const formData = new FormData();
     formData.append("file", blob, fileName);
@@ -927,25 +1025,30 @@ async function uploadAndSendVoice(blob, mimeType) {
   } catch(err) { appendSystemMessage("Errore invio vocale."); }
 }
 
-// ---- EVENTI MIC BUTTON ----
+// ---- DOM READY ----
 window.addEventListener("DOMContentLoaded", () => {
   const inputBar = document.getElementById("input-bar");
   if (inputBar) {
+    inputBar.style.position = "relative";
     inputBar.appendChild(micTimerOverlay);
     inputBar.appendChild(micBtn);
-    inputBar.style.position = "relative";
   }
   initAudioMimeType();
   initVideoMimeType();
   requestNotificationPermission();
   checkPWAInstallBanner();
+
+  // Auto-login da sessione salvata
+  const savedUser = loadSession();
+  if (savedUser && savedUser.email && savedUser.name) {
+    window.initZeusApp(savedUser);
+  }
 });
 
-// Touch events (iOS/Android)
+// ---- MIC TOUCH EVENTS ----
 micBtn.addEventListener("touchstart", (e) => {
   e.preventDefault();
   micStartX = e.touches[0].clientX;
-  micLocked = false;
   startVoiceRecording();
 }, { passive: false });
 
@@ -953,7 +1056,6 @@ micBtn.addEventListener("touchmove", (e) => {
   e.preventDefault();
   if (!isRecording) return;
   const deltaX = e.touches[0].clientX - micStartX;
-  // Scorri sinistra > 80px per annullare
   if (deltaX < -80) {
     micTimerOverlay.textContent = "🗑 Rilascia per annullare";
     micTimerOverlay.style.background = "rgba(239,68,68,0.95)";
@@ -966,24 +1068,16 @@ micBtn.addEventListener("touchend", (e) => {
   e.preventDefault();
   if (!isRecording) return;
   const deltaX = e.changedTouches[0].clientX - micStartX;
-  if (deltaX < -80) {
-    stopVoiceRecording(true); // annulla
-  } else {
-    stopVoiceRecording(false); // invia
-  }
+  stopVoiceRecording(deltaX < -80);
   micTimerOverlay.style.background = "rgba(37,99,235,0.95)";
 }, { passive: false });
 
-// Mouse events (desktop)
-micBtn.addEventListener("mousedown", (e) => {
-  micStartX = e.clientX;
-  startVoiceRecording();
-});
+micBtn.addEventListener("mousedown", () => startVoiceRecording());
 micBtn.addEventListener("mouseup", () => stopVoiceRecording(false));
 micBtn.addEventListener("mouseleave", () => { if (isRecording) stopVoiceRecording(false); });
 
 // =====================================================================
-// ==== VIDEO MESSAGGI — CERCHIO STILE TELEGRAM ========================
+// ==== VIDEO MESSAGGI =================================================
 // =====================================================================
 
 function setVideoNoteButtonState(recording) {
@@ -1001,7 +1095,6 @@ function setVideoNoteButtonState(recording) {
   }
 }
 
-// Overlay countdown video
 let videoCountdownOverlay = null;
 
 function createVideoCountdownOverlay() {
@@ -1058,18 +1151,14 @@ async function startVideoMessageRecording() {
       if (localVideoElement) localVideoElement.srcObject = null;
       if (videoArea) videoArea.style.display = "none";
       if (videoChunks.length > 0) {
-        try {
-          const mimeType = videoRecorder.mimeType || supportedVideoMimeType || "video/webm";
-          const blob = new Blob(videoChunks, { type: mimeType });
-          videoChunks = [];
-          await sendVideoMessage(blob, mimeType);
-        } catch(err) { appendSystemMessage("Errore elaborazione video."); }
+        const mimeType = videoRecorder.mimeType || supportedVideoMimeType || "video/webm";
+        const blob = new Blob(videoChunks, { type: mimeType });
+        videoChunks = [];
+        await sendVideoMessage(blob, mimeType);
       } else { appendSystemMessage("Nessun dato video."); videoChunks = []; }
     };
     videoRecorder.onerror = () => {
-      isVideoRecording = false;
-      setVideoNoteButtonState(false);
-      stopVideoCountdown();
+      isVideoRecording = false; setVideoNoteButtonState(false); stopVideoCountdown();
       if (videoPreviewStream) { videoPreviewStream.getTracks().forEach(t => t.stop()); videoPreviewStream = null; }
       if (localVideoElement) localVideoElement.srcObject = null;
       if (videoArea) videoArea.style.display = "none";
@@ -1081,23 +1170,21 @@ async function startVideoMessageRecording() {
     appendSystemMessage("● Registrazione avviata (max " + MAX_VIDEO_SECONDS + "s). Premi ⏹ per fermare.");
     videoRecordTimeout = setTimeout(() => {
       if (isVideoRecording && videoRecorder && videoRecorder.state === "recording") {
-        appendSystemMessage("Tempo massimo raggiunto.");
+        appendSystemMessage("Tempo massimo.");
         videoRecorder.stop();
       }
     }, MAX_VIDEO_SECONDS * 1000);
   } catch(err) {
-    isVideoRecording = false;
-    setVideoNoteButtonState(false);
+    isVideoRecording = false; setVideoNoteButtonState(false);
     if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-      appendSystemMessage("⚠️ Permesso camera negato. Vai in Impostazioni > abilita Camera e Microfono per questo sito.");
+      appendSystemMessage("⚠️ Permesso camera negato. Abilita camera e microfono nelle impostazioni.");
     } else { appendSystemMessage("Errore camera: " + err.message); }
   }
 }
 
 function stopVideoMessageRecording() {
   if (!isVideoRecording || !videoRecorder) return;
-  setVideoNoteButtonState(false);
-  stopVideoCountdown();
+  setVideoNoteButtonState(false); stopVideoCountdown();
   if (videoRecordTimeout) { clearTimeout(videoRecordTimeout); videoRecordTimeout = null; }
   try {
     if (videoRecorder.state === "recording" || videoRecorder.state === "paused") videoRecorder.stop();
@@ -1116,17 +1203,11 @@ async function sendVideoMessage(blob, mimeType) {
     const ext = isMP4 ? ".mp4" : ".webm";
     const fileName = `video-message-${Date.now()}${ext}`;
     appendSystemMessage("Invio video...");
-
-    // Mostra progress upload
     showUploadProgress("Video in caricamento...");
-
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/upload");
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        updateUploadProgress(pct);
-      }
+      if (e.lengthComputable) updateUploadProgress(Math.round((e.loaded / e.total) * 100));
     };
     xhr.onload = () => {
       hideUploadProgress();
@@ -1173,7 +1254,6 @@ if (videoNoteBtn) {
 // ==== PROGRESS BAR UPLOAD ============================================
 // =====================================================================
 
-let progressBar = null;
 let progressContainer = null;
 
 function showUploadProgress(label) {
@@ -1183,14 +1263,14 @@ function showUploadProgress(label) {
     const labelEl = document.createElement("div");
     labelEl.id = "upload-label";
     labelEl.style.cssText = "font-size:12px;color:#e5e7eb;margin-bottom:6px;";
-    progressBar = document.createElement("div");
-    progressBar.style.cssText = "height:4px;background:rgba(37,99,235,0.2);border-radius:4px;overflow:hidden;";
+    const bar = document.createElement("div");
+    bar.style.cssText = "height:4px;background:rgba(37,99,235,0.2);border-radius:4px;overflow:hidden;";
     const fill = document.createElement("div");
     fill.id = "upload-fill";
     fill.style.cssText = "height:100%;width:0%;background:#2563eb;border-radius:4px;transition:width 0.2s;";
-    progressBar.appendChild(fill);
+    bar.appendChild(fill);
     progressContainer.appendChild(labelEl);
-    progressContainer.appendChild(progressBar);
+    progressContainer.appendChild(bar);
     document.body.appendChild(progressContainer);
   }
   const labelEl = document.getElementById("upload-label");
@@ -1338,10 +1418,7 @@ socket.on("private-message", (msg) => {
     playSound("message");
     vibrate(100);
     incrementUnread(msg.from.email);
-    showBrowserNotification(
-      msg.from.name || msg.from.email,
-      msg.text.length > 60 ? msg.text.substring(0, 60) + "..." : msg.text
-    );
+    showBrowserNotification(msg.from.name || msg.from.email, msg.text.length > 60 ? msg.text.substring(0, 60) + "..." : msg.text);
   }
 });
 
@@ -1372,50 +1449,40 @@ if (sendBtn) {
 }
 
 if (input) { input.addEventListener("keypress", (e) => { if (e.key === "Enter") sendBtn.click(); }); }
+if (emailInput) { emailInput.addEventListener("keypress", (e) => { if (e.key === "Enter") loginBtn && loginBtn.click(); }); }
 
 // =====================================================================
-// ==== ALLEGATI — MENU STILE TELEGRAM =================================
+// ==== ALLEGATI =======================================================
 // =====================================================================
 
 let attachMenu = null;
 
 function createAttachMenu() {
-  if (attachMenu) { toggleAttachMenu(); return; }
+  if (attachMenu) { closeAttachMenu(); return; }
   attachMenu = document.createElement("div");
   attachMenu.style.cssText = "position:absolute;bottom:60px;left:8px;background:rgba(2,6,23,0.97);border:1px solid rgba(37,99,235,0.4);border-radius:14px;padding:8px;display:flex;flex-direction:column;gap:4px;z-index:200;min-width:160px;box-shadow:0 4px 20px rgba(0,0,0,0.5);";
-
   const options = [
     { icon: "🖼", label: "Foto / Immagine", accept: "image/*" },
     { icon: "🎬", label: "Video", accept: "video/*" },
     { icon: "📄", label: "Documento", accept: "*/*" },
   ];
-
   options.forEach(opt => {
     const btn = document.createElement("button");
     btn.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px 12px;background:transparent;border:none;color:#e5e7eb;font-size:13px;border-radius:8px;cursor:pointer;text-align:left;";
     btn.innerHTML = `<span style="font-size:20px">${opt.icon}</span><span>${opt.label}</span>`;
     btn.addEventListener("mouseenter", () => btn.style.background = "rgba(37,99,235,0.15)");
     btn.addEventListener("mouseleave", () => btn.style.background = "transparent");
-    btn.addEventListener("click", () => {
-      closeAttachMenu();
-      triggerFileUpload(opt.accept);
-    });
+    btn.addEventListener("click", () => { closeAttachMenu(); triggerFileUpload(opt.accept); });
+    btn.addEventListener("touchend", (e) => { e.preventDefault(); closeAttachMenu(); triggerFileUpload(opt.accept); }, { passive: false });
     attachMenu.appendChild(btn);
   });
-
   const composer = document.getElementById("composer");
   if (composer) { composer.style.position = "relative"; composer.appendChild(attachMenu); }
-
-  // Chiudi cliccando fuori
-  setTimeout(() => {
-    document.addEventListener("click", closeAttachMenuOnOutside);
-  }, 100);
+  setTimeout(() => { document.addEventListener("click", closeAttachMenuOnOutside); }, 100);
 }
 
 function closeAttachMenuOnOutside(e) {
-  if (attachMenu && !attachMenu.contains(e.target) && e.target !== attachBtn) {
-    closeAttachMenu();
-  }
+  if (attachMenu && !attachMenu.contains(e.target) && e.target !== attachBtn) closeAttachMenu();
 }
 
 function closeAttachMenu() {
@@ -1423,18 +1490,12 @@ function closeAttachMenu() {
   document.removeEventListener("click", closeAttachMenuOnOutside);
 }
 
-function toggleAttachMenu() {
-  if (attachMenu) { closeAttachMenu(); } else { createAttachMenu(); }
-}
-
 function triggerFileUpload(accept) {
   if (!currentUser) { appendSystemMessage("Fai login prima."); return; }
   if (!selectedContactEmail) { appendSystemMessage("Seleziona un contatto."); return; }
-  // Crea input dinamico per evitare problemi iOS con multiple
   const tempInput = document.createElement("input");
   tempInput.type = "file";
   tempInput.accept = accept || "*/*";
-  // Non usare multiple su iOS Safari
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   if (!isIOS) tempInput.multiple = true;
   tempInput.style.display = "none";
@@ -1442,42 +1503,26 @@ function triggerFileUpload(accept) {
   tempInput.addEventListener("change", async () => {
     const files = Array.from(tempInput.files || []);
     document.body.removeChild(tempInput);
-    if (!files.length) return;
-    for (const file of files) {
-      await uploadFile(file);
-    }
+    for (const file of files) { await uploadFile(file); }
   });
   tempInput.click();
 }
 
 async function uploadFile(file) {
   if (!file) return;
-  // Controlla dimensione
-  if (file.size > 50 * 1024 * 1024) {
-    appendSystemMessage(`⚠️ File troppo grande: ${file.name} (max 50MB)`);
-    return;
-  }
+  if (file.size > 50 * 1024 * 1024) { appendSystemMessage(`⚠️ File troppo grande: ${file.name} (max 50MB)`); return; }
   try {
     const isImage = file.type.startsWith("image/");
-    const label = isImage ? `🖼 immagine: ${file.name}` : `📎 allegato: ${file.name}`;
     showUploadProgress(`Invio ${file.name}...`);
-
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/upload");
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) updateUploadProgress(Math.round((e.loaded / e.total) * 100));
-    };
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) updateUploadProgress(Math.round((e.loaded / e.total) * 100)); };
     xhr.onload = () => {
       hideUploadProgress();
       try {
         const data = JSON.parse(xhr.responseText);
         if (!data || !data.ok || !data.url) { appendSystemMessage(`Errore upload "${file.name}".`); return; }
-        let msgText;
-        if (isImage) {
-          msgText = `🖼 immagine: ${file.name} (${data.url})`;
-        } else {
-          msgText = `📎 allegato: ${file.name} (${data.url})`;
-        }
+        const msgText = isImage ? `🖼 immagine: ${file.name} (${data.url})` : `📎 allegato: ${file.name} (${data.url})`;
         if (socket.connected) {
           socket.emit("private-message", { toEmail: selectedContactEmail, text: msgText });
         } else {
@@ -1493,13 +1538,10 @@ async function uploadFile(file) {
 }
 
 if (attachBtn) {
-  attachBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toggleAttachMenu();
-  });
+  attachBtn.addEventListener("click", (e) => { e.stopPropagation(); createAttachMenu(); });
+  attachBtn.addEventListener("touchend", (e) => { e.preventDefault(); e.stopPropagation(); createAttachMenu(); }, { passive: false });
 }
 
-// Mantieni fileInput originale per compatibilità
 if (fileInput) {
   fileInput.addEventListener("change", async () => {
     const files = Array.from(fileInput.files || []);
@@ -1550,6 +1592,11 @@ function showCallUI(name, mode) {
     if (currentCallPeerEmail) socket.emit("call-hangup", { toEmail: currentCallPeerEmail });
     endCall("Chiamata chiusa.");
   });
+  hangupBtn.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    if (currentCallPeerEmail) socket.emit("call-hangup", { toEmail: currentCallPeerEmail });
+    endCall("Chiamata chiusa.");
+  }, { passive: false });
   callUI.appendChild(icon); callUI.appendChild(info); callUI.appendChild(hangupBtn);
   document.body.appendChild(callUI);
 }
@@ -1563,7 +1610,7 @@ function startCallTimer() {
     const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
     const m = Math.floor(elapsed / 60);
     const s = elapsed % 60;
-    timerEl.textContent = `${m}:${s.toString().padStart(2,"0")}`;
+    timerEl.textContent = `${m}:${s.toString().padStart(2, "0")}`;
   }, 1000);
 }
 
@@ -1583,8 +1630,8 @@ async function getLocalStreamAudioOnly() {
 
 async function getLocalStreamAudioVideo() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-    if (localVideoElement) localVideoElement.srcObject = stream;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: "user" } });
+    if (localVideoElement) { localVideoElement.srcObject = stream; localVideoElement.muted = true; }
     return stream;
   } catch(err) { appendSystemMessage("Impossibile accedere a microfono/camera."); throw err; }
 }
@@ -1593,18 +1640,19 @@ async function startLocalAudio() { if (localStream) return localStream; localStr
 async function startLocalMediaWithVideo() { localStream = await getLocalStreamAudioVideo(); return localStream; }
 
 function createPeerConnection() {
-  if (peerConnection) {
-    try { peerConnection.close(); } catch {}
-    peerConnection = null;
-  }
+  if (peerConnection) { try { peerConnection.close(); } catch {} peerConnection = null; }
   peerConnection = new RTCPeerConnection(rtcConfig);
+
   peerConnection.onicecandidate = (e) => {
     if (e.candidate && currentCallPeerEmail) {
       socket.emit("call-ice-candidate", { toEmail: currentCallPeerEmail, candidate: e.candidate });
     }
   };
+
   peerConnection.ontrack = (e) => {
     const remoteStream = e.streams[0];
+    if (!remoteStream) return;
+    // Audio remoto
     if (!remoteAudioElement) {
       remoteAudioElement = document.createElement("audio");
       remoteAudioElement.autoplay = true;
@@ -1613,29 +1661,53 @@ function createPeerConnection() {
       document.body.appendChild(remoteAudioElement);
     }
     remoteAudioElement.srcObject = remoteStream;
-    if (remoteVideoElement) remoteVideoElement.srcObject = remoteStream;
-    // Avvia timer chiamata quando arriva il flusso remoto
+    // Su iOS devi fare play() esplicitamente
+    remoteAudioElement.play().catch(() => {});
+
+    if (remoteVideoElement) {
+      remoteVideoElement.srcObject = remoteStream;
+      remoteVideoElement.setAttribute("playsinline", "");
+      remoteVideoElement.muted = false;
+      remoteVideoElement.play().catch(() => {});
+    }
     startCallTimer();
   };
+
   peerConnection.onconnectionstatechange = () => {
+    if (!peerConnection) return;
     const state = peerConnection.connectionState;
     appendSystemMessage("WebRTC: " + state);
     if (state === "connected") {
       const timerEl = document.getElementById("call-timer");
       if (timerEl) timerEl.textContent = "0:00";
+      if (callTimeoutTimer) { clearTimeout(callTimeoutTimer); callTimeoutTimer = null; }
     }
-    if (state === "failed" || state === "disconnected") {
-      endCall("Connessione interrotta.");
+    if (state === "failed") {
+      endCall("Connessione fallita. Riprova.");
     }
   };
+
+  peerConnection.oniceconnectionstatechange = () => {
+    if (!peerConnection) return;
+    const state = peerConnection.iceConnectionState;
+    if (state === "disconnected") {
+      // Aspetta 5s prima di dichiarare fallimento
+      setTimeout(() => {
+        if (peerConnection && peerConnection.iceConnectionState === "disconnected") {
+          endCall("Connessione persa.");
+        }
+      }, 5000);
+    }
+  };
+
   return peerConnection;
 }
 
-// Aspetta ICE gathering completo prima di inviare offer/answer
+// Aspetta ICE gathering — timeout 5s su mobile
 function waitForIceGathering(pc) {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === "complete") { resolve(); return; }
-    const timeout = setTimeout(() => resolve(), 3000); // max 3s
+    const timeout = setTimeout(() => resolve(), 5000);
     pc.addEventListener("icegatheringstatechange", () => {
       if (pc.iceGatheringState === "complete") { clearTimeout(timeout); resolve(); }
     });
@@ -1649,7 +1721,7 @@ async function endCall(reason = "Chiamata terminata.") {
   isAudioCallActive = false; isVideoCallActive = false; currentCallPeerEmail = null;
   if (peerConnection) { try { peerConnection.close(); } catch {} peerConnection = null; }
   if (localStream) { try { localStream.getTracks().forEach(t => t.stop()); } catch {} localStream = null; }
-  if (remoteAudioElement) { remoteAudioElement.srcObject = null; remoteAudioElement = null; }
+  if (remoteAudioElement) { try { remoteAudioElement.srcObject = null; remoteAudioElement.remove(); } catch {} remoteAudioElement = null; }
   if (localVideoElement) localVideoElement.srcObject = null;
   if (remoteVideoElement) remoteVideoElement.srcObject = null;
   if (videoArea) videoArea.style.display = "none";
@@ -1664,7 +1736,7 @@ async function startAudioCall() {
     currentCallPeerEmail = selectedContactEmail;
     createPeerConnection();
     stream.getTracks().forEach(t => peerConnection.addTrack(t, stream));
-    const offer = await peerConnection.createOffer();
+    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true });
     await peerConnection.setLocalDescription(offer);
     await waitForIceGathering(peerConnection);
     socket.emit("call-offer", { toEmail: currentCallPeerEmail, offer: peerConnection.localDescription, mode: "audio" });
@@ -1673,14 +1745,13 @@ async function startAudioCall() {
     const peerName = chatTitleText.textContent || currentCallPeerEmail;
     showCallUI(peerName, "audio");
     appendSystemMessage(`📞 Chiamata verso ${currentCallPeerEmail}...`);
-    // Timeout 30s
     callTimeoutTimer = setTimeout(() => {
       if (isAudioCallActive && peerConnection && peerConnection.connectionState !== "connected") {
         socket.emit("call-hangup", { toEmail: currentCallPeerEmail });
         endCall("⏱ Nessuna risposta.");
       }
     }, 30000);
-  } catch(err) { await endCall("Chiamata interrotta."); }
+  } catch(err) { await endCall("Chiamata interrotta: " + err.message); }
 }
 
 async function startVideoCall() {
@@ -1692,7 +1763,7 @@ async function startVideoCall() {
     createPeerConnection();
     stream.getTracks().forEach(t => peerConnection.addTrack(t, stream));
     if (videoArea) videoArea.style.display = "block";
-    const offer = await peerConnection.createOffer();
+    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
     await peerConnection.setLocalDescription(offer);
     await waitForIceGathering(peerConnection);
     socket.emit("call-offer", { toEmail: currentCallPeerEmail, offer: peerConnection.localDescription, mode: "video" });
@@ -1707,7 +1778,7 @@ async function startVideoCall() {
         endCall("⏱ Nessuna risposta.");
       }
     }, 30000);
-  } catch(err) { await endCall("Videochiamata interrotta."); }
+  } catch(err) { await endCall("Videochiamata interrotta: " + err.message); }
 }
 
 if (audioCallBtn) {
@@ -1743,7 +1814,7 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
     createPeerConnection();
     stream.getTracks().forEach(t => peerConnection.addTrack(t, stream));
     if (isVideo && videoArea) videoArea.style.display = "block";
-    await peerConnection.setRemoteDescription(offer);
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
     await waitForIceGathering(peerConnection);
@@ -1752,32 +1823,40 @@ socket.on("call-offer", async ({ from, offer, mode }) => {
     selectedContactEmail = from.email;
     showCallUI(from.name || from.email, mode);
     appendSystemMessage(`✅ ${isVideo ? "Videochiamata" : "Chiamata"} con ${from.email} attiva.`);
-  } catch(err) { await endCall("Chiamata interrotta per errore."); }
+  } catch(err) { await endCall("Chiamata interrotta: " + err.message); }
 });
 
-socket.on("call-answer", async ({ from, answer, mode }) => {
+socket.on("call-answer", async ({ from, answer }) => {
   stopRingtone();
   if (callTimeoutTimer) { clearTimeout(callTimeoutTimer); callTimeoutTimer = null; }
   try {
     if (!peerConnection) return;
-    await peerConnection.setRemoteDescription(answer);
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
     appendSystemMessage(`✅ ${from?.email} ha risposto.`);
-  } catch(err) { appendSystemMessage("Errore risposta chiamata."); }
+  } catch(err) { appendSystemMessage("Errore risposta chiamata: " + err.message); }
 });
 
 socket.on("call-ice-candidate", async ({ candidate }) => {
-  try { if (peerConnection) await peerConnection.addIceCandidate(candidate); } catch(err) {}
+  try {
+    if (peerConnection && candidate) {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  } catch(err) {}
 });
+
 socket.on("call-hangup", async ({ from }) => { await endCall(`📵 Chiamata terminata da ${from?.email || "remoto"}.`); });
-socket.on("call-reject", ({ from }) => { stopRingtone(); if (callTimeoutTimer) { clearTimeout(callTimeoutTimer); callTimeoutTimer = null; } endCall(`❌ Rifiutata da ${from?.email || "remoto"}.`); });
+socket.on("call-reject", ({ from }) => {
+  stopRingtone();
+  if (callTimeoutTimer) { clearTimeout(callTimeoutTimer); callTimeoutTimer = null; }
+  endCall(`❌ Rifiutata da ${from?.email || "remoto"}.`);
+});
 
 // =====================================================================
-// ==== VOCALI — RICEZIONE =============================================
+// ==== VOCALI RICEZIONE ===============================================
 // =====================================================================
 
 socket.on("voice-message", (msg) => {
   const isMe = currentUser && msg.from.email === currentUser.email;
-  // Supporta sia il vecchio formato base64 che il nuovo formato URL
   const div = document.createElement("div");
   div.classList.add("msg", isMe ? "from-me" : "from-other");
   if (!isMe) {
@@ -1785,14 +1864,14 @@ socket.on("voice-message", (msg) => {
     div.appendChild(s);
   }
   const bubble = document.createElement("div"); bubble.className = "msg-bubble";
-  bubble.style.cssText = "min-width:200px;";
+  bubble.style.cssText = "min-width:200px;max-width:280px;";
   const audioRow = document.createElement("div");
   audioRow.style.cssText = "display:flex;align-items:center;gap:8px;";
   const playBtn = document.createElement("button");
-  playBtn.style.cssText = "width:36px;height:36px;border-radius:50%;background:#2563eb;border:none;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;";
+  playBtn.style.cssText = "width:40px;height:40px;border-radius:50%;background:#2563eb;border:none;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;-webkit-tap-highlight-color:transparent;";
   playBtn.textContent = "▶";
   const audioEl = document.createElement("audio");
-  audioEl.src = msg.audio; // base64 o URL
+  audioEl.src = msg.audio;
   audioEl.preload = "metadata";
   audioEl.setAttribute("playsinline", "");
   const waveDiv = document.createElement("div");
@@ -1804,27 +1883,34 @@ socket.on("voice-message", (msg) => {
     waveDiv.appendChild(bar);
   }
   const durationSpan = document.createElement("span");
-  durationSpan.style.cssText = "font-size:11px;color:#9ca3af;white-space:nowrap;";
+  durationSpan.style.cssText = "font-size:11px;color:#9ca3af;white-space:nowrap;min-width:32px;";
   durationSpan.textContent = "0:00";
   audioEl.addEventListener("loadedmetadata", () => {
     if (audioEl.duration && isFinite(audioEl.duration)) {
       const m = Math.floor(audioEl.duration / 60);
       const s = Math.floor(audioEl.duration % 60);
-      durationSpan.textContent = `${m}:${s.toString().padStart(2,"0")}`;
+      durationSpan.textContent = `${m}:${s.toString().padStart(2, "0")}`;
     }
   });
   audioEl.addEventListener("timeupdate", () => {
     if (audioEl.duration && isFinite(audioEl.duration)) {
       const m = Math.floor(audioEl.currentTime / 60);
       const s = Math.floor(audioEl.currentTime % 60);
-      durationSpan.textContent = `${m}:${s.toString().padStart(2,"0")}`;
+      durationSpan.textContent = `${m}:${s.toString().padStart(2, "0")}`;
     }
   });
+  audioEl.addEventListener("ended", () => { playBtn.textContent = "▶"; });
+  playBtn.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    unlockAudioContext();
+    if (audioEl.paused) { playAudioSafe(audioEl); playBtn.textContent = "⏸"; }
+    else { audioEl.pause(); playBtn.textContent = "▶"; }
+  }, { passive: false });
   playBtn.addEventListener("click", () => {
-    if (audioEl.paused) { audioEl.play(); playBtn.textContent = "⏸"; }
+    unlockAudioContext();
+    if (audioEl.paused) { playAudioSafe(audioEl); playBtn.textContent = "⏸"; }
     else { audioEl.pause(); playBtn.textContent = "▶"; }
   });
-  audioEl.addEventListener("ended", () => { playBtn.textContent = "▶"; });
   audioRow.appendChild(playBtn); audioRow.appendChild(waveDiv); audioRow.appendChild(durationSpan);
   bubble.appendChild(audioRow);
   div.appendChild(bubble);
@@ -1832,15 +1918,11 @@ socket.on("voice-message", (msg) => {
   div.appendChild(timeEl);
   const peerEmail = isMe ? selectedContactEmail : msg.from.email;
   if (peerEmail) addMessageToContact(peerEmail, div);
-  if (!isMe) {
-    playSound("message");
-    vibrate(100);
-    incrementUnread(msg.from.email);
-  }
+  if (!isMe) { playSound("message"); vibrate(100); incrementUnread(msg.from.email); }
 });
 
 // =====================================================================
-// ==== PWA — BANNER INSTALLAZIONE =====================================
+// ==== PWA BANNER =====================================================
 // =====================================================================
 
 let deferredInstallPrompt = null;
@@ -1853,41 +1935,28 @@ window.addEventListener("beforeinstallprompt", (e) => {
 });
 
 function checkPWAInstallBanner() {
-  // Se già installata non mostrare
   if (window.matchMedia("(display-mode: standalone)").matches) return;
   if (window.navigator.standalone === true) return;
-  // Controlla se già mostrato di recente (7 giorni)
-  const lastShown = localStorage.getItem("zeus-banner-dismissed");
-  if (lastShown && Date.now() - parseInt(lastShown) < 7 * 24 * 60 * 60 * 1000) return;
-  // iOS: mostra istruzioni manuali
+  try {
+    const lastShown = localStorage.getItem("zeus-banner-dismissed");
+    if (lastShown && Date.now() - parseInt(lastShown) < 7 * 24 * 60 * 60 * 1000) return;
+  } catch(e) {}
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-  if (isIOS) {
-    setTimeout(() => showIOSInstallBanner(), 3000);
-  }
+  if (isIOS) setTimeout(() => showIOSInstallBanner(), 3000);
 }
 
 function showInstallBanner() {
   if (installBanner) return;
-  const lastShown = localStorage.getItem("zeus-banner-dismissed");
-  if (lastShown && Date.now() - parseInt(lastShown) < 7 * 24 * 60 * 60 * 1000) return;
+  try {
+    const lastShown = localStorage.getItem("zeus-banner-dismissed");
+    if (lastShown && Date.now() - parseInt(lastShown) < 7 * 24 * 60 * 60 * 1000) return;
+  } catch(e) {}
   installBanner = document.createElement("div");
   installBanner.style.cssText = "position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#020617,#0f172a);border-top:1px solid rgba(37,99,235,0.5);padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:1000;box-shadow:0 -4px 20px rgba(0,0,0,0.5);";
-  installBanner.innerHTML = `
-    <span style="font-size:28px">⚡</span>
-    <div style="flex:1">
-      <div style="font-size:13px;font-weight:600;color:#e5e7eb">Installa ZEUS Chat</div>
-      <div style="font-size:11px;color:#9ca3af">Accesso rapido, funziona offline</div>
-    </div>
-    <button id="install-yes" style="background:#2563eb;border:none;border-radius:999px;color:#fff;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;">Installa</button>
-    <button id="install-no" style="background:transparent;border:1px solid rgba(148,163,184,0.3);border-radius:999px;color:#9ca3af;padding:7px 12px;font-size:13px;cursor:pointer;">✕</button>
-  `;
+  installBanner.innerHTML = `<span style="font-size:28px">⚡</span><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#e5e7eb">Installa ZEUS Chat</div><div style="font-size:11px;color:#9ca3af">Accesso rapido, funziona offline</div></div><button id="install-yes" style="background:#2563eb;border:none;border-radius:999px;color:#fff;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;">Installa</button><button id="install-no" style="background:transparent;border:1px solid rgba(148,163,184,0.3);border-radius:999px;color:#9ca3af;padding:7px 12px;font-size:13px;cursor:pointer;">✕</button>`;
   document.body.appendChild(installBanner);
   document.getElementById("install-yes").addEventListener("click", async () => {
-    if (deferredInstallPrompt) {
-      deferredInstallPrompt.prompt();
-      const result = await deferredInstallPrompt.userChoice;
-      deferredInstallPrompt = null;
-    }
+    if (deferredInstallPrompt) { deferredInstallPrompt.prompt(); deferredInstallPrompt = null; }
     dismissInstallBanner();
   });
   document.getElementById("install-no").addEventListener("click", () => dismissInstallBanner());
@@ -1897,19 +1966,7 @@ function showIOSInstallBanner() {
   if (installBanner) return;
   installBanner = document.createElement("div");
   installBanner.style.cssText = "position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#020617,#0f172a);border-top:1px solid rgba(37,99,235,0.5);padding:12px 16px;z-index:1000;box-shadow:0 -4px 20px rgba(0,0,0,0.5);";
-  installBanner.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-      <span style="font-size:24px">⚡</span>
-      <div style="flex:1;font-size:13px;font-weight:600;color:#e5e7eb">Installa ZEUS Chat su iPhone</div>
-      <button id="install-no" style="background:transparent;border:none;color:#9ca3af;font-size:18px;cursor:pointer;padding:0 4px;">✕</button>
-    </div>
-    <div style="font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:6px;">
-      <span>Tocca</span>
-      <span style="font-size:18px">⬆️</span>
-      <span>poi <strong style="color:#e5e7eb">"Aggiungi a schermata Home"</strong></span>
-    </div>
-    <div style="margin-top:6px;font-size:11px;color:#6b7280;">Nessun App Store richiesto • Gratuita</div>
-  `;
+  installBanner.innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="font-size:24px">⚡</span><div style="flex:1;font-size:13px;font-weight:600;color:#e5e7eb">Installa ZEUS su iPhone</div><button id="install-no" style="background:transparent;border:none;color:#9ca3af;font-size:18px;cursor:pointer;padding:0 4px;">✕</button></div><div style="font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:6px;"><span>Tocca</span><span style="font-size:18px">⬆️</span><span>poi <strong style="color:#e5e7eb">"Aggiungi a schermata Home"</strong></span></div>`;
   document.body.appendChild(installBanner);
   document.getElementById("install-no").addEventListener("click", () => dismissInstallBanner());
 }
@@ -1926,6 +1983,7 @@ function dismissInstallBanner() {
 window.initZeusApp = function(user) {
   currentUser = user || null;
   if (!currentUser || !currentUser.email) { appendSystemMessage("Utente non valido."); return; }
+  saveSession(currentUser);
   showApp();
   socket.emit("set-user", currentUser);
   loadUsers();
@@ -1945,11 +2003,6 @@ if (loginBtn) {
       window.initZeusApp(data.user);
     } catch(err) { if (errorDiv) errorDiv.textContent = "Errore di connessione."; }
   });
-}
-
-// Enter su login
-if (emailInput) {
-  emailInput.addEventListener("keypress", (e) => { if (e.key === "Enter") loginBtn.click(); });
 }
 
 showLogin();
