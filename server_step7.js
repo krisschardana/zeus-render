@@ -383,17 +383,11 @@ app.delete("/api/users/:email", (req, res) => {
 // ---- HELPER: invia evento a tutti i socket di un utente ----
 function emitToUser(email, event, data) {
   const emailNorm = normalizeEmail(email);
-  // Usa il socket più recente (onlineSocketsByEmail) come primario
-  const primaryId = onlineSocketsByEmail[emailNorm];
-  if (primaryId) {
-    io.to(primaryId).emit(event, data);
-    return true;
-  }
-  // Fallback: se non c'è socket primario, usa il primo disponibile
   const sockets = socketsByEmail[emailNorm];
   if (!sockets || sockets.size === 0) return false;
-  const firstId = sockets.values().next().value;
-  if (firstId) io.to(firstId).emit(event, data);
+  sockets.forEach((socketId) => {
+    io.to(socketId).emit(event, data);
+  });
   return true;
 }
 
