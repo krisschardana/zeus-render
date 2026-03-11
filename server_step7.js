@@ -25,7 +25,6 @@ const io = new Server(server, {
   maxHttpBufferSize: 50e6
 });
 
-// CORS per tutte le route
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -131,6 +130,7 @@ function saveMessage(fromEmail, toEmail, text, type = "private") {
   const key = getChatKey(fromEmail, toEmail);
   if (!messagesDB[key]) messagesDB[key] = [];
   const msg = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     from: normalizeEmail(fromEmail),
     to: normalizeEmail(toEmail),
     text,
@@ -211,7 +211,7 @@ function findFfmpeg() {
 
 findFfmpeg();
 
-// ---- CONVERSIONE ASINCRONA WEBM -> MP4 (NON BLOCCA LA RISPOSTA) ----
+// ---- CONVERSIONE ASINCRONA WEBM -> MP4 ----
 function convertWebmToMp4Async(inputPath, outputPath) {
   if (!ffmpegPath) {
     console.log("Conversione saltata: ffmpeg non disponibile");
@@ -244,13 +244,9 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   const publicUrl = "/uploads/" + req.file.filename;
 
   if (isWebm && ffmpegPath) {
-    // Risponde SUBITO con URL WebM — la conversione avviene in background
     const outputName = req.file.filename.replace(/\.webm$/i, "") + "-conv.mp4";
     const outputPath = path.join(UPLOADS_DIR, outputName);
-
-    // Avvia conversione in background (non blocca)
     convertWebmToMp4Async(req.file.path, outputPath);
-
     console.log("File WebM ricevuto, risposta immediata:", publicUrl);
     return res.json({
       ok: true,
@@ -313,11 +309,47 @@ app.get("/api/messages", (req, res) => {
   const { emailA, emailB, limit } = req.query;
   if (!emailA || !emailB) return res.status(400).json({ ok: false, error: "emailA e emailB obbligatori." });
   const msgs = getMessages(emailA, emailB, parseInt(limit || "100", 10));
+  let changed = false;
   const enriched = msgs.map((m) => {
+    // Genera id al volo per messaggi vecchi che ne sono privi
+    if (!m.id) {
+      m.id = crypto.randomBytes(16).toString("hex");
+      changed = true;
+    }
     const fromUser = users.find((u) => normalizeEmail(u.email) === normalizeEmail(m.from)) || { email: m.from, name: m.from };
     return { ...m, fromUser };
   });
+  // Salva solo se abbiamo aggiunto id mancanti
+  if (changed) saveMessagesToFile();
   res.json({ ok: true, messages: enriched });
+});
+
+// ---- ELIMINA SINGOLO MESSAGGIO ----
+app.delete("/api/messages/single", (req, res) => {
+  const { emailA, emailB, msgId } = req.query;
+  if (!emailA || !emailB || !msgId) return res.status(400).json({ ok: false, error: "emailA, emailB e msgId obbligatori." });
+  const key = getChatKey(emailA, emailB);
+  if (!messagesDB[key]) return res.json({ ok: false, error: "Chat non trovata." });
+  const before = messagesDB[key].length;
+  messagesDB[key] = messagesDB[key].filter(m => m.id !== msgId);
+  if (messagesDB[key].length === before) return res.json({ ok: false, error: "Messaggio non trovato." });
+  saveMessagesToFile();
+  console.log("Messaggio eliminato:", msgId, "da chat", key);
+  return res.json({ ok: true });
+});
+
+// ---- PULISCI INTERA CHAT ----
+app.delete("/api/messages", (req, res) => {
+  const { emailA, emailB } = req.query;
+  if (!emailA || !emailB) return res.status(400).json({ ok: false, error: "emailA e emailB obbligatori." });
+  const key = getChatKey(emailA, emailB);
+  messagesDB[key] = [];
+  saveMessagesToFile();
+  console.log("Chat pulita:", key);
+  // Notifica entrambi gli utenti via socket
+  emitToUser(normalizeEmail(emailA), "chat-cleared", { byEmail: normalizeEmail(emailA) });
+  emitToUser(normalizeEmail(emailB), "chat-cleared", { byEmail: normalizeEmail(emailA) });
+  return res.json({ ok: true });
 });
 
 // ---- PROFILO UTENTE ----
@@ -351,11 +383,17 @@ app.delete("/api/users/:email", (req, res) => {
 // ---- HELPER: invia evento a tutti i socket di un utente ----
 function emitToUser(email, event, data) {
   const emailNorm = normalizeEmail(email);
+  // Usa il socket più recente (onlineSocketsByEmail) come primario
+  const primaryId = onlineSocketsByEmail[emailNorm];
+  if (primaryId) {
+    io.to(primaryId).emit(event, data);
+    return true;
+  }
+  // Fallback: se non c'è socket primario, usa il primo disponibile
   const sockets = socketsByEmail[emailNorm];
   if (!sockets || sockets.size === 0) return false;
-  sockets.forEach((socketId) => {
-    io.to(socketId).emit(event, data);
-  });
+  const firstId = sockets.values().next().value;
+  if (firstId) io.to(firstId).emit(event, data);
   return true;
 }
 
@@ -389,9 +427,24 @@ io.on("connection", (socket) => {
     if (!from || !toEmail || !text) return;
     const toEmailNorm = normalizeEmail(toEmail);
     const saved = saveMessage(from.email, toEmailNorm, text, "private");
-    const payload = { from, text, ts: saved.ts };
+    const payload = { id: saved.id, from, text, ts: saved.ts };
     emitToUser(toEmailNorm, "private-message", payload);
     emitToUser(from.email, "private-message", payload);
+  });
+
+  // ---- ELIMINA MESSAGGIO VIA SOCKET ----
+  socket.on("delete-message", ({ toEmail, msgId }) => {
+    const from = socket.data.user;
+    if (!from || !toEmail || !msgId) return;
+    const toEmailNorm = normalizeEmail(toEmail);
+    const key = getChatKey(from.email, toEmailNorm);
+    if (messagesDB[key]) {
+      messagesDB[key] = messagesDB[key].filter(m => m.id !== msgId);
+      saveMessagesToFile();
+    }
+    // Notifica entrambi
+    emitToUser(toEmailNorm, "message-deleted", { msgId });
+    emitToUser(from.email, "message-deleted", { msgId });
   });
 
   // ---- TYPING ----
@@ -423,7 +476,6 @@ io.on("connection", (socket) => {
   });
 
   // ---- VOICE MESSAGE ----
-  // Supporta sia il vecchio formato base64 che il nuovo formato (testo con URL)
   socket.on("voice-message", (payload) => {
     const from = socket.data.user;
     if (!from) return;

@@ -131,7 +131,6 @@
       .contact-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
       .contact-email { display: block; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-      /* Badge non letti */
       .unread-badge {
         background: var(--accent-blue);
         color: #fff;
@@ -188,6 +187,11 @@
       #video-call-btn { background: radial-gradient(circle at 30% 0, #fef9c3 0, #facc15 40%, #a16207 100%); }
       #video-call-btn::before { content: "🎥"; }
 
+      /* Pulsanti header aggiunti da JS */
+      #conference-toggle, #clear-chat-btn {
+        flex-shrink: 0;
+      }
+
       /* ---- VIDEO AREA ---- */
       #video-area {
         display: none; padding: 10px 16px;
@@ -241,7 +245,6 @@
         min-height: 20px; font-style: italic; flex-shrink: 0;
       }
 
-      /* Video bubble circolare stile Telegram */
       .video-bubble {
         width: 200px; height: 200px; border-radius: 50%; overflow: hidden;
         display: inline-flex; align-items: center; justify-content: center;
@@ -300,7 +303,6 @@
       }
       #video-note-btn span { font-size: 16px; margin-left: 1px; }
 
-      /* Mic button */
       #mic-btn {
         width: 36px; height: 36px; border-radius: 50%;
         background: transparent; border: none;
@@ -396,9 +398,6 @@
         background: transparent; color: var(--text-muted); font-size: 13px; cursor: pointer;
       }
 
-      /* ================================================================
-         RESPONSIVE — TABLET (max 900px)
-      ================================================================ */
       @media (max-width: 900px) {
         body { padding: 0; }
         #app-shell { max-width: 100%; max-height: none; height: 100dvh; border-radius: 0; border: none; }
@@ -406,85 +405,25 @@
         #contacts { width: 220px; }
       }
 
-      /* ================================================================
-         RESPONSIVE — MOBILE (max 640px)
-      ================================================================ */
       @media (max-width: 640px) {
         body { padding: 0; }
-
-        #app-shell {
-          max-width: 100%;
-          max-height: none;
-          height: 100dvh;
-          border-radius: 0;
-          border: none;
-          box-shadow: none;
-        }
-
-        #layout {
-          flex-direction: row;
-          height: 100%;
-          position: relative;
-          overflow: hidden;
-        }
-
-        #contacts {
-          position: absolute;
-          top: 0; left: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 10;
-          padding: 12px;
-          padding-top: calc(12px + var(--safe-top));
-          transition: transform 0.25s ease;
-        }
-
-        #contacts.hidden-mobile {
-          transform: translateX(-100%);
-        }
-
-        #chat-area {
-          position: absolute;
-          top: 0; left: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 5;
-          transform: translateX(100%);
-          transition: transform 0.25s ease;
-        }
-
-        #chat-area.visible-mobile {
-          transform: translateX(0);
-        }
-
-        #chat-panel {
-          height: 100%;
-        }
-
-        #chat-header {
-          padding-top: calc(8px + var(--safe-top));
-        }
-
+        #app-shell { max-width: 100%; max-height: none; height: 100dvh; border-radius: 0; border: none; box-shadow: none; }
+        #layout { flex-direction: row; height: 100%; position: relative; overflow: hidden; }
+        #contacts { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; padding: 12px; padding-top: calc(12px + var(--safe-top)); transition: transform 0.25s ease; }
+        #contacts.hidden-mobile { transform: translateX(-100%); }
+        #chat-area { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; transform: translateX(100%); transition: transform 0.25s ease; }
+        #chat-area.visible-mobile { transform: translateX(0); }
+        #chat-panel { height: 100%; }
+        #chat-header { padding-top: calc(8px + var(--safe-top)); }
         #chat-back-btn { display: inline-flex; }
-
         .icon-btn { width: 32px; height: 32px; font-size: 15px; }
-
         #video-wrapper { max-height: 220px; }
-
         .video-bubble { width: 160px; height: 160px; }
-
         #login-box { width: 92%; max-width: 360px; padding: 20px 18px; }
-
         .msg-bubble { max-width: 88%; }
-
-        #composer {
-          padding-bottom: calc(10px + var(--safe-bottom));
-        }
+        #composer { padding-bottom: calc(10px + var(--safe-bottom)); }
       }
 
-      /* ================================================================
-         RESPONSIVE — PICCOLI TELEFONI (max 380px)
-      ================================================================ */
       @media (max-width: 380px) {
         #chat-header { padding: 6px 8px; gap: 6px; }
         .icon-btn { width: 28px; height: 28px; font-size: 13px; }
@@ -537,6 +476,7 @@
                 <span id="chat-title-text">Chat</span>
                 <button id="audio-call-btn" class="icon-btn"></button>
                 <button id="video-call-btn" class="icon-btn"></button>
+                <!-- Pulsanti aggiunti da app.js: conference-toggle e clear-chat-btn -->
               </div>
 
               <div id="video-area">
@@ -599,16 +539,13 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=3"></script>
 
-    <!-- PWA Service Worker -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js')
-            .then(reg => {
-              console.log('ZEUS SW registrato ✅', reg.scope);
-            })
+            .then(reg => console.log('ZEUS SW registrato ✅', reg.scope))
             .catch(err => console.log('SW errore:', err));
         });
       }
