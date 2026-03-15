@@ -97,20 +97,35 @@ loadUsersFromFile();
 // ---- MESSAGGI ----
 let messagesDB = {};
 
+// FIX: pulizia automatica BOM e conflitti Git — non richiede mai intervento manuale
 function loadMessagesFromFile() {
   try {
     if (fs.existsSync(MESSAGES_DB_PATH)) {
-      const raw = fs.readFileSync(MESSAGES_DB_PATH, "utf8");
+      let raw = fs.readFileSync(MESSAGES_DB_PATH, "utf8");
+      raw = raw.replace(/^\uFEFF/, "").trim();
+      if (raw.includes("<<<<<<<") || raw.includes(">>>>>>>") || raw.includes("=======")) {
+        console.log("messages.json corrotto (conflitto Git), reset automatico.");
+        messagesDB = {};
+        saveMessagesToFile();
+        return;
+      }
+      if (!raw || raw.length === 0) {
+        messagesDB = {};
+        return;
+      }
       messagesDB = JSON.parse(raw) || {};
       let total = 0;
       Object.values(messagesDB).forEach((arr) => { total += arr.length; });
       console.log("Messaggi caricati:", total, "messaggi totali.");
     } else {
       console.log("Nessun messages.json trovato, storico vuoto.");
+      messagesDB = {};
+      saveMessagesToFile();
     }
   } catch (err) {
-    console.error("Errore lettura messages.json:", err);
+    console.error("Errore lettura messages.json, reset automatico:", err.message);
     messagesDB = {};
+    saveMessagesToFile();
   }
 }
 
@@ -126,11 +141,15 @@ function getChatKey(emailA, emailB) {
   return [normalizeEmail(emailA), normalizeEmail(emailB)].sort().join("__");
 }
 
+function generateMsgId() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
 function saveMessage(fromEmail, toEmail, text, type = "private") {
   const key = getChatKey(fromEmail, toEmail);
   if (!messagesDB[key]) messagesDB[key] = [];
   const msg = {
-    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    id: generateMsgId(),
     from: normalizeEmail(fromEmail),
     to: normalizeEmail(toEmail),
     text,
@@ -189,7 +208,14 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ---- TROVA FFMPEG ----
-const FFMPEG_PATHS = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "ffmpeg"];
+const FFMPEG_PATHS = [
+  "/usr/bin/ffmpeg",
+  "/usr/local/bin/ffmpeg",
+  "ffmpeg",
+  "C:\\ffmpeg\\bin\\ffmpeg.exe",
+  "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+  process.env.FFMPEG_PATH || ""
+].filter(p => p.length > 0);
 let ffmpegPath = null;
 
 function findFfmpeg() {
@@ -211,30 +237,9 @@ function findFfmpeg() {
 
 findFfmpeg();
 
-// ---- CONVERSIONE ASINCRONA WEBM -> MP4 ----
-function convertWebmToMp4Async(inputPath, outputPath) {
-  if (!ffmpegPath) {
-    console.log("Conversione saltata: ffmpeg non disponibile");
-    return;
-  }
-  execFile(ffmpegPath, [
-    "-i", inputPath,
-    "-c:v", "libx264",
-    "-c:a", "aac",
-    "-movflags", "+faststart",
-    "-y", outputPath
-  ], { timeout: 120000 }, (err) => {
-    if (err) {
-      console.log("Conversione ffmpeg fallita:", err.message);
-      return;
-    }
-    try { fs.unlinkSync(inputPath); } catch(e) {}
-    console.log("Conversione MP4 completata:", outputPath);
-  });
-}
-
 // ---- UPLOAD ENDPOINT ----
-app.post("/api/upload", upload.single("file"), (req, res) => {
+// FIX: async — attende ffmpeg prima di rispondere, iPhone riceve MP4 già pronto
+app.post("/api/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Nessun file caricato." });
 
   const isWebm = req.file.mimetype === "video/webm" ||
@@ -246,14 +251,41 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   if (isWebm && ffmpegPath) {
     const outputName = req.file.filename.replace(/\.webm$/i, "") + "-conv.mp4";
     const outputPath = path.join(UPLOADS_DIR, outputName);
-    convertWebmToMp4Async(req.file.path, outputPath);
-    console.log("File WebM ricevuto, risposta immediata:", publicUrl);
+
+    const converted = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        console.log("Timeout conversione ffmpeg, uso webm originale");
+        resolve(false);
+      }, 25000);
+
+      execFile(ffmpegPath, [
+        "-i", req.file.path,
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        "-y", outputPath
+      ], { timeout: 25000 }, (err) => {
+        clearTimeout(timer);
+        if (!err) {
+          try { fs.unlinkSync(req.file.path); } catch (e) {}
+          console.log("Conversione MP4 completata:", outputPath);
+          resolve(true);
+        } else {
+          console.log("Conversione ffmpeg fallita:", err.message);
+          resolve(false);
+        }
+      });
+    });
+
+    const finalUrl = converted ? ("/uploads/" + outputName) : publicUrl;
+    const finalMime = converted ? "video/mp4" : req.file.mimetype;
+    console.log("Video pronto per il client:", finalUrl);
     return res.json({
       ok: true,
-      url: publicUrl,
+      url: finalUrl,
       originalName: req.file.originalname,
       size: req.file.size,
-      mimeType: req.file.mimetype
+      mimeType: finalMime
     });
   }
 
@@ -311,15 +343,10 @@ app.get("/api/messages", (req, res) => {
   const msgs = getMessages(emailA, emailB, parseInt(limit || "100", 10));
   let changed = false;
   const enriched = msgs.map((m) => {
-    // Genera id al volo per messaggi vecchi che ne sono privi
-    if (!m.id) {
-      m.id = crypto.randomBytes(16).toString("hex");
-      changed = true;
-    }
+    if (!m.id) { m.id = generateMsgId(); changed = true; }
     const fromUser = users.find((u) => normalizeEmail(u.email) === normalizeEmail(m.from)) || { email: m.from, name: m.from };
     return { ...m, fromUser };
   });
-  // Salva solo se abbiamo aggiunto id mancanti
   if (changed) saveMessagesToFile();
   res.json({ ok: true, messages: enriched });
 });
@@ -334,7 +361,7 @@ app.delete("/api/messages/single", (req, res) => {
   messagesDB[key] = messagesDB[key].filter(m => m.id !== msgId);
   if (messagesDB[key].length === before) return res.json({ ok: false, error: "Messaggio non trovato." });
   saveMessagesToFile();
-  console.log("Messaggio eliminato:", msgId, "da chat", key);
+  console.log("Messaggio eliminato:", msgId);
   return res.json({ ok: true });
 });
 
@@ -346,7 +373,6 @@ app.delete("/api/messages", (req, res) => {
   messagesDB[key] = [];
   saveMessagesToFile();
   console.log("Chat pulita:", key);
-  // Notifica entrambi gli utenti via socket
   emitToUser(normalizeEmail(emailA), "chat-cleared", { byEmail: normalizeEmail(emailA) });
   emitToUser(normalizeEmail(emailB), "chat-cleared", { byEmail: normalizeEmail(emailA) });
   return res.json({ ok: true });
@@ -426,7 +452,6 @@ io.on("connection", (socket) => {
     emitToUser(from.email, "private-message", payload);
   });
 
-  // ---- ELIMINA MESSAGGIO VIA SOCKET ----
   socket.on("delete-message", ({ toEmail, msgId }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !msgId) return;
@@ -436,12 +461,10 @@ io.on("connection", (socket) => {
       messagesDB[key] = messagesDB[key].filter(m => m.id !== msgId);
       saveMessagesToFile();
     }
-    // Notifica entrambi
     emitToUser(toEmailNorm, "message-deleted", { msgId });
     emitToUser(from.email, "message-deleted", { msgId });
   });
 
-  // ---- TYPING ----
   socket.on("typing-start", ({ toEmail }) => {
     const from = socket.data.user;
     if (!from || !toEmail) return;
@@ -469,7 +492,6 @@ io.on("connection", (socket) => {
     emitToUser(normalizeEmail(toEmail), "kmeet-invite", { from, roomUrl, ts: Date.now() });
   });
 
-  // ---- VOICE MESSAGE ----
   socket.on("voice-message", (payload) => {
     const from = socket.data.user;
     if (!from) return;
@@ -485,7 +507,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ---- WEBRTC ----
   socket.on("call-offer", ({ toEmail, offer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !offer) return;
@@ -518,7 +539,6 @@ io.on("connection", (socket) => {
     emitToUser(normalizeEmail(toEmail), "call-reject", { from });
   });
 
-  // ---- DISCONNECT ----
   socket.on("disconnect", (reason) => {
     const user = socket.data.user;
     console.log("Disconnesso:", socket.id, "motivo:", reason);

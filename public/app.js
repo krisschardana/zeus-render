@@ -112,17 +112,41 @@ let ringtoneInterval = null, ringtoneOscRunning = false;
 let typingTimeout = null, isTyping = false, typingHideTimeout = null;
 let notificationsEnabled = false;
 
-const rtcConfig = {
+// TURN server — credenziali dinamiche via API Metered
+// Quando avrai VPS: cambi solo METERED_API_KEY con le tue credenziali coturn
+const METERED_API_KEY = "e154c9491970e12ad7e1f31f9361311cb6b0";
+const METERED_API_URL = `https://zeus-call.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`;
+
+// rtcConfig base — usato finché non arrivano le credenziali dinamiche
+let rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "turn:a.relay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:a.relay.metered.ca:80?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:a.relay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turns:a.relay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+    { urls: "stun:stun.relay.metered.ca:80" },
+    { urls: "turn:global.relay.metered.ca:80",                username: "2ca958c4a5a80a8a1a72df2d", credential: "IOy7p2agrerWI3aQ" },
+    { urls: "turn:global.relay.metered.ca:80?transport=tcp",  username: "2ca958c4a5a80a8a1a72df2d", credential: "IOy7p2agrerWI3aQ" },
+    { urls: "turn:global.relay.metered.ca:443",               username: "2ca958c4a5a80a8a1a72df2d", credential: "IOy7p2agrerWI3aQ" },
+    { urls: "turns:global.relay.metered.ca:443?transport=tcp",username: "2ca958c4a5a80a8a1a72df2d", credential: "IOy7p2agrerWI3aQ" }
   ],
-  iceCandidatePoolSize: 10, bundlePolicy: "max-bundle", rtcpMuxPolicy: "require"
+  iceCandidatePoolSize: 10,
+  bundlePolicy: "max-bundle",
+  rtcpMuxPolicy: "require",
+  iceTransportPolicy: "all"
 };
+
+// Carica credenziali aggiornate da API Metered all'avvio
+async function loadTurnCredentials() {
+  try {
+    const res = await fetch(METERED_API_URL);
+    const iceServers = await res.json();
+    if (Array.isArray(iceServers) && iceServers.length > 0) {
+      rtcConfig = { ...rtcConfig, iceServers };
+      console.log("TURN credenziali caricate:", iceServers.length, "server");
+    }
+  } catch(e) {
+    console.log("TURN API non raggiungibile, uso credenziali statiche.");
+  }
+}
 
 // =====================================================================
 // DOM
@@ -158,7 +182,6 @@ remoteVideoElement = document.getElementById("remoteVideo");
 
 // =====================================================================
 // PWA INSTALL BANNER — UNIVERSALE
-// Mostra SEMPRE al primo avvio. Dopo dismiss, ricompare dopo 3 giorni.
 // =====================================================================
 let deferredInstallPrompt = null;
 let installBanner = null;
@@ -178,10 +201,8 @@ function shouldShowPWABanner() {
   if (isRunningAsPWA()) return false;
   try {
     const ts = localStorage.getItem(PWA_DISMISS_KEY);
-    if (!ts) return true; // mai visto → mostra sempre
-    // Se il valore salvato è un timestamp di dismiss, rimostra dopo 3 giorni
+    if (!ts) return true;
     const saved = parseInt(ts);
-    // Se è un timestamp futuro lontano (installata) → non mostrare
     if (saved > Date.now() + 30 * 86400000) return false;
     return (Date.now() - saved) / 86400000 >= PWA_DISMISS_DAYS;
   } catch(e) { return true; }
@@ -190,7 +211,6 @@ function shouldShowPWABanner() {
 function showInstallBanner(mode) {
   if (installBanner || !shouldShowPWABanner()) return;
 
-  // Inietta animazione CSS una volta sola
   if (!document.getElementById("zeus-pwa-style")) {
     const s = document.createElement("style");
     s.id = "zeus-pwa-style";
@@ -215,7 +235,6 @@ function showInstallBanner(mode) {
     "font-family:system-ui,-apple-system,sans-serif"
   ].join(";");
 
-  // ---- Riga top ----
   const topRow = document.createElement("div");
   topRow.style.cssText = "display:flex;align-items:center;gap:12px;";
 
@@ -248,9 +267,7 @@ function showInstallBanner(mode) {
   topRow.appendChild(xBtn);
   installBanner.appendChild(topRow);
 
-  // ---- Riga bottom ----
   if (mode === "ios") {
-    // Istruzioni Safari iOS in due step
     const steps = [
       { num: "1", html: `Tocca <strong style="color:#38bdf8">Condividi</strong> <span style="font-size:16px">⬆️</span> nella barra di Safari` },
       { num: "2", html: `Scegli <strong style="color:#38bdf8">"Aggiungi a schermata Home"</strong> <span style="font-size:15px">➕</span>` }
@@ -268,7 +285,6 @@ function showInstallBanner(mode) {
       installBanner.appendChild(row);
     });
   } else {
-    // Pulsante installa nativo (Android / Desktop / Chrome)
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:10px;margin-top:2px;";
 
@@ -314,8 +330,8 @@ function dismissInstallBanner(installed) {
   }
   try {
     const futureTs = installed
-      ? Date.now() + 365 * 86400000  // installata: non mostrare più per 1 anno
-      : Date.now();                   // dismessa: rimostra dopo PWA_DISMISS_DAYS
+      ? Date.now() + 365 * 86400000
+      : Date.now();
     localStorage.setItem(PWA_DISMISS_KEY, futureTs.toString());
   } catch(e) {}
 }
@@ -326,10 +342,8 @@ function initPWABanner() {
   if (isIOS) {
     const isSafari = /Safari/.test(navigator.userAgent) && !/CriOS|FxiOS|OPiOS/.test(navigator.userAgent);
     if (isSafari) setTimeout(() => showInstallBanner("ios"), 1500);
-    else setTimeout(() => showInstallBanner("native"), 1500); // Chrome iOS, Firefox iOS
+    else setTimeout(() => showInstallBanner("native"), 1500);
   } else {
-    // Android, Desktop Chrome, Firefox, Edge — mostra sempre
-    // Se beforeinstallprompt è già arrivato usa "native", altrimenti "generic"
     setTimeout(() => {
       if (!installBanner) showInstallBanner(deferredInstallPrompt ? "native" : "native");
     }, 1500);
@@ -488,7 +502,6 @@ window.addEventListener("resize", () => {
 // STORICO MESSAGGI
 // =====================================================================
 const messagesByContact = {};
-// Mappa msgId -> elemento DOM (per delete)
 const msgElementById = {};
 
 function getContactMessages(email) {
@@ -527,7 +540,7 @@ function playVideoSafe(videoEl) {
 }
 
 // =====================================================================
-// MENU CONTESTUALE MESSAGGIO (tap/long-press stile Telegram)
+// MENU CONTESTUALE MESSAGGIO
 // =====================================================================
 let msgContextMenu = null;
 
@@ -554,21 +567,11 @@ function showMsgContextMenu(x, y, msgId, wrapper) {
   btn.innerHTML = `<span style="font-size:16px">🗑</span> Elimina messaggio`;
   btn.addEventListener("mouseenter", () => btn.style.background = "rgba(239,68,68,0.12)");
   btn.addEventListener("mouseleave", () => btn.style.background = "transparent");
-
-  btn.addEventListener("click", () => {
-    closeMsgContextMenu();
-    deleteMessage(msgId, wrapper);
-  });
-  btn.addEventListener("touchend", (e) => {
-    e.preventDefault();
-    closeMsgContextMenu();
-    deleteMessage(msgId, wrapper);
-  }, { passive: false });
+  btn.addEventListener("click", () => { closeMsgContextMenu(); deleteMessage(msgId, wrapper); });
+  btn.addEventListener("touchend", (e) => { e.preventDefault(); closeMsgContextMenu(); deleteMessage(msgId, wrapper); }, { passive: false });
 
   msgContextMenu.appendChild(btn);
   document.body.appendChild(msgContextMenu);
-
-  // Chiudi se click fuori
   setTimeout(() => {
     document.addEventListener("click", closeMsgContextMenu, { once: true });
     document.addEventListener("touchend", closeMsgContextMenu, { once: true });
@@ -577,7 +580,6 @@ function showMsgContextMenu(x, y, msgId, wrapper) {
 
 function deleteMessage(msgId, wrapper) {
   if (!msgId || !selectedContactEmail || !currentUser) return;
-  // Animazione sparizione
   wrapper.style.transition = "opacity 0.25s, transform 0.25s";
   wrapper.style.opacity = "0";
   wrapper.style.transform = "scale(0.95)";
@@ -585,11 +587,9 @@ function deleteMessage(msgId, wrapper) {
     if (wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
     delete msgElementById[msgId];
   }, 250);
-  // Notifica server via socket
   socket.emit("delete-message", { toEmail: selectedContactEmail, msgId });
 }
 
-// Ricezione eliminazione da remoto
 socket.on("message-deleted", ({ msgId }) => {
   if (!msgId) return;
   const el = msgElementById[msgId];
@@ -601,7 +601,6 @@ socket.on("message-deleted", ({ msgId }) => {
   }
 });
 
-// Chat pulita da remoto
 socket.on("chat-cleared", () => {
   if (chatDiv) chatDiv.innerHTML = "";
   if (selectedContactEmail) messagesByContact[selectedContactEmail] = [];
@@ -609,7 +608,7 @@ socket.on("chat-cleared", () => {
 });
 
 // =====================================================================
-// BUILD MESSAGGIO — cestino su hover (desktop) + long-press (mobile)
+// BUILD MESSAGGIO
 // =====================================================================
 function buildMessageElement(fromUser, text, ts, isMe, msgId) {
   const wrapper = document.createElement("div");
@@ -636,7 +635,6 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
   const imgMatch    = text.match(/🖼 immagine:\s*(.+)\s+\((\/uploads\/[^\)]+)\)/);
 
   if (videoMatch) {
-    // ---- VIDEO BOLLA — FIX iOS ----
     const videoBubble = document.createElement("div");
     videoBubble.className = "video-bubble";
     videoBubble.style.cssText = "width:200px;height:200px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;background:#020617;box-shadow:0 0 0 3px rgba(59,130,246,0.6);position:relative;cursor:pointer;-webkit-tap-highlight-color:transparent;";
@@ -654,12 +652,9 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
     videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;";
 
     if (isIOS) {
-      // iOS: MP4 come primario, webm come fallback
       const s1 = document.createElement("source"); s1.src = urlMp4; s1.type = "video/mp4";
       const s2 = document.createElement("source"); s2.src = urlPath; s2.type = "video/webm";
       videoEl.appendChild(s1); videoEl.appendChild(s2);
-
-      // Fallback: se nessuna fonte funziona → mostra controls nativi
       videoEl.addEventListener("error", function onErr() {
         if (videoEl.src !== urlPath) { videoEl.src = urlPath; videoEl.load(); }
         else {
@@ -692,12 +687,9 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
     videoBubble.addEventListener("touchmove",  () => { touchMoved = true;  }, { passive: true });
     videoBubble.addEventListener("touchend", (e) => {
       if (touchMoved) return;
-      e.preventDefault();
-      unlockAudioContext();
-      toggleVideo();
+      e.preventDefault(); unlockAudioContext(); toggleVideo();
     }, { passive: false });
     videoBubble.addEventListener("click", (e) => { e.stopPropagation(); toggleVideo(); });
-
     videoEl.addEventListener("ended", () => { playOverlay.style.opacity = "1"; });
     videoEl.addEventListener("pause", () => { playOverlay.style.opacity = "1"; });
     videoEl.addEventListener("play",  () => { playOverlay.style.opacity = "0"; });
@@ -705,20 +697,14 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
     wrapper.appendChild(videoBubble);
 
   } else if (audioMatch) {
-    // ---- AUDIO BOLLA ----
     bubble.style.cssText += "min-width:200px;max-width:280px;";
     const audioRow = document.createElement("div");
     audioRow.style.cssText = "display:flex;align-items:center;gap:8px;";
-
     const playBtn = document.createElement("button");
     playBtn.style.cssText = "width:40px;height:40px;border-radius:50%;background:#2563eb;border:none;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;-webkit-tap-highlight-color:transparent;";
     playBtn.textContent = "▶";
-
     const audioEl = document.createElement("audio");
-    audioEl.src = audioMatch[2];
-    audioEl.preload = "metadata";
-    audioEl.setAttribute("playsinline", "");
-
+    audioEl.src = audioMatch[2]; audioEl.preload = "metadata"; audioEl.setAttribute("playsinline", "");
     const waveDiv = document.createElement("div");
     waveDiv.style.cssText = "flex:1;height:28px;display:flex;align-items:center;gap:2px;";
     for (let i = 0; i < 20; i++) {
@@ -726,16 +712,13 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
       bar.style.cssText = `width:3px;height:${4 + Math.random()*20}px;background:rgba(148,163,184,0.5);border-radius:2px;flex-shrink:0;`;
       waveDiv.appendChild(bar);
     }
-
     const durSpan = document.createElement("span");
     durSpan.style.cssText = "font-size:11px;color:#9ca3af;white-space:nowrap;min-width:32px;";
     durSpan.textContent = "0:00";
-
     const fmtDur = (t) => `${Math.floor(t/60)}:${Math.floor(t%60).toString().padStart(2,"0")}`;
     audioEl.addEventListener("loadedmetadata", () => { if (isFinite(audioEl.duration)) durSpan.textContent = fmtDur(audioEl.duration); });
     audioEl.addEventListener("timeupdate",     () => { if (isFinite(audioEl.duration)) durSpan.textContent = fmtDur(audioEl.currentTime); });
     audioEl.addEventListener("ended", () => { playBtn.textContent = "▶"; });
-
     const toggleAudio = () => {
       unlockAudioContext();
       if (audioEl.paused) { playAudioSafe(audioEl); playBtn.textContent = "⏸"; }
@@ -743,7 +726,6 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
     };
     playBtn.addEventListener("touchend", (e) => { e.preventDefault(); toggleAudio(); }, { passive: false });
     playBtn.addEventListener("click", toggleAudio);
-
     audioRow.appendChild(playBtn); audioRow.appendChild(waveDiv); audioRow.appendChild(durSpan);
     bubble.appendChild(audioRow);
     wrapper.appendChild(bubble);
@@ -768,27 +750,22 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
     wrapper.appendChild(bubble);
   }
 
-  // Riga inferiore: ora + cestino a destra
   const timeRow = document.createElement("div");
   timeRow.className = "msg-time";
   timeRow.style.cssText = "display:flex;align-items:center;gap:6px;" + (isMe ? "justify-content:flex-end;" : "justify-content:flex-start;");
-
   const timeSpan = document.createElement("span");
   timeSpan.textContent = formatTime(ts);
   timeRow.appendChild(timeSpan);
 
-  // Cestino — SEMPRE presente (anche senza msgId usa fallback)
   const effectiveId = msgId || null;
   const delBtn = document.createElement("button");
   delBtn.textContent = "🗑";
   delBtn.title = "Elimina messaggio";
   delBtn.style.cssText = "display:none;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:999px;padding:0 6px;font-size:11px;cursor:pointer;color:#f87171;line-height:1.6;transition:background 0.15s;flex-shrink:0;";
 
-  // Desktop: mostra su hover del wrapper
   wrapper.addEventListener("mouseenter", () => { delBtn.style.display = "inline-block"; });
   wrapper.addEventListener("mouseleave", () => { delBtn.style.display = "none"; });
 
-  // Mobile: long-press → mostra per 3s
   let pressTimer = null, hideTimer = null;
   wrapper.addEventListener("touchstart", () => {
     pressTimer = setTimeout(() => {
@@ -826,7 +803,6 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
 async function loadMessageHistory(peerEmail) {
   if (!currentUser || !peerEmail) return;
   if (chatDiv) chatDiv.innerHTML = "";
-  // Pulisci mappa id per questa chat
   Object.keys(msgElementById).forEach(k => delete msgElementById[k]);
   try {
     const res = await fetch(`/api/messages?emailA=${encodeURIComponent(currentUser.email)}&emailB=${encodeURIComponent(peerEmail)}&limit=100`);
@@ -860,8 +836,6 @@ function clearChatUI() {
   const peerName = chatTitleText.textContent || selectedContactEmail;
   const ok = confirm(`Vuoi eliminare tutta la chat con ${peerName}?\n\nQuesta azione cancella i messaggi per entrambi.`);
   if (!ok) return;
-
-  // Chiama API server
   fetch(`/api/messages?emailA=${encodeURIComponent(currentUser.email)}&emailB=${encodeURIComponent(selectedContactEmail)}`, {
     method: "DELETE"
   }).then(r => r.json()).then(data => {
@@ -870,9 +844,7 @@ function clearChatUI() {
       messagesByContact[selectedContactEmail] = [];
       Object.keys(msgElementById).forEach(k => delete msgElementById[k]);
       appendSystemMessage("✅ Chat eliminata.");
-    } else {
-      appendSystemMessage("Errore eliminazione chat.");
-    }
+    } else { appendSystemMessage("Errore eliminazione chat."); }
   }).catch(() => appendSystemMessage("Errore connessione."));
 }
 
@@ -1170,12 +1142,10 @@ async function uploadAndSendVoice(blob, mimeType) {
   } catch(e) { appendSystemMessage("Errore invio vocale."); }
 }
 
-// DOM READY
 window.addEventListener("DOMContentLoaded", () => {
   const inputBar = document.getElementById("input-bar");
   if (inputBar) { inputBar.style.position = "relative"; inputBar.appendChild(micTimerOverlay); inputBar.appendChild(micBtn); }
 
-  // Aggiungi pulsanti header — DOM sicuramente pronto
   const hdr = document.getElementById("chat-header");
   if (hdr) {
     hdr.appendChild(conferenceBtn);
@@ -1189,13 +1159,12 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   initAudioMimeType(); initVideoMimeType(); requestNotificationPermission();
-  // Cancella eventuale chiave PWA vecchia che bloccava il banner, poi inizializza
+  loadTurnCredentials();
   setTimeout(() => initPWABanner(), 1200);
   const savedUser = loadSession();
   if (savedUser?.email && savedUser?.name) window.initZeusApp(savedUser);
 });
 
-// Mic events
 micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); micStartX = e.touches[0].clientX; startVoiceRecording(); }, { passive:false });
 micBtn.addEventListener("touchmove", (e) => {
   e.preventDefault(); if (!isRecording) return;
