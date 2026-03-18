@@ -99,7 +99,32 @@
       }
       #profile-btn:hover { background: rgba(37,99,235,0.3); }
 
-      #contacts-list { flex: 1; overflow-y: auto; }
+      #contacts-list { overflow-y: auto; }
+
+      /* P3 — Sezione Gruppi nella sidebar */
+      #groups-section {
+        margin-top: 12px;
+        border-top: 1px solid var(--border-subtle);
+        padding-top: 10px;
+        flex-shrink: 0;
+      }
+
+      #groups-subheader {
+        display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px 0;
+      }
+      #groups-subheader h2 {
+        font-size: 13px; margin: 0; text-transform: uppercase;
+        letter-spacing: 0.08em; color: var(--text-muted);
+      }
+
+      #create-group-btn {
+        background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.5);
+        border-radius: 999px; color: #a5b4fc; font-size: 11px; padding: 2px 8px;
+        cursor: pointer; transition: background 0.15s;
+      }
+      #create-group-btn:hover { background: rgba(99,102,241,0.3); }
+
+      #groups-list { overflow-y: auto; }
 
       .contact {
         padding: 8px; border-radius: 8px; cursor: pointer;
@@ -109,6 +134,10 @@
       }
       .contact:hover { background: rgba(37,99,235,0.08); transform: translateY(-1px); }
       .contact.selected { background: rgba(37,99,235,0.15); box-shadow: 0 0 0 1px rgba(37,99,235,0.7); }
+
+      /* P3 — gruppo selezionato colore viola */
+      .group-item.selected { background: rgba(99,102,241,0.15); box-shadow: 0 0 0 1px rgba(99,102,241,0.7); }
+      .group-item:hover { background: rgba(99,102,241,0.08); }
 
       .contact-avatar {
         width: 34px; height: 34px; border-radius: 50%; object-fit: cover;
@@ -187,10 +216,7 @@
       #video-call-btn { background: radial-gradient(circle at 30% 0, #fef9c3 0, #facc15 40%, #a16207 100%); }
       #video-call-btn::before { content: "🎥"; }
 
-      /* Pulsanti header aggiunti da JS */
-      #conference-toggle, #clear-chat-btn {
-        flex-shrink: 0;
-      }
+      #conference-toggle, #clear-chat-btn { flex-shrink: 0; }
 
       /* ---- VIDEO AREA ---- */
       #video-area {
@@ -342,12 +368,25 @@
       #error { color: #f97316; margin-top: 8px; font-size: 12px; }
       #info { color: #22c55e; margin-top: 6px; font-size: 12px; }
 
-      /* ---- MODAL PROFILO ---- */
-      #profile-modal-overlay {
+      /* ---- MODAL BASE ---- */
+      .modal-overlay {
         display: none; position: fixed; inset: 0;
         background: rgba(0,0,0,0.75); z-index: 1000;
         align-items: center; justify-content: center;
       }
+      .modal-overlay.open { display: flex; }
+
+      .modal-box {
+        background: radial-gradient(circle at top, #020617 0%, #000000 90%);
+        border: 1px solid rgba(37,99,235,0.7); border-radius: 16px;
+        padding: 24px; width: 340px; max-width: 95vw;
+        box-shadow: 0 0 30px rgba(37,99,235,0.4);
+        display: flex; flex-direction: column; gap: 12px;
+        max-height: 90vh; overflow-y: auto;
+      }
+
+      /* ---- MODAL PROFILO ---- */
+      #profile-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; }
       #profile-modal-overlay.open { display: flex; }
 
       #profile-modal {
@@ -397,6 +436,108 @@
         border: 1px solid rgba(148,163,184,0.3);
         background: transparent; color: var(--text-muted); font-size: 13px; cursor: pointer;
       }
+
+      /* ---- P3 MODAL CREA GRUPPO ---- */
+      #create-group-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; }
+      #create-group-overlay.open { display: flex; }
+
+      #create-group-modal {
+        background: radial-gradient(circle at top, #020617 0%, #000000 90%);
+        border: 1px solid rgba(99,102,241,0.7); border-radius: 16px;
+        padding: 24px; width: 360px; max-width: 95vw;
+        box-shadow: 0 0 30px rgba(99,102,241,0.4);
+        display: flex; flex-direction: column; gap: 14px;
+        max-height: 85vh; overflow-y: auto;
+      }
+      #create-group-modal h2 { margin: 0; font-size: 16px; color: #e5e7eb; display: flex; align-items: center; gap: 8px; }
+      #create-group-modal h2::before { content: "👥"; }
+
+      #group-name-input {
+        width: 100%; padding: 8px 14px; border-radius: 999px;
+        border: 1px solid rgba(99,102,241,0.5); background: #020617;
+        color: var(--text-primary); font-size: 13px; outline: none;
+      }
+      #group-name-input:focus { box-shadow: 0 0 10px rgba(99,102,241,0.5); }
+
+      #group-member-checklist {
+        display: flex; flex-direction: column; gap: 4px;
+        max-height: 200px; overflow-y: auto;
+        border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 8px;
+      }
+
+      .group-member-label {
+        display: flex; align-items: center; gap: 8px;
+        padding: 5px 4px; cursor: pointer; font-size: 13px; color: #e5e7eb;
+        border-radius: 6px; transition: background 0.1s;
+      }
+      .group-member-label:hover { background: rgba(99,102,241,0.1); }
+
+      #create-group-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+      #create-group-confirm {
+        padding: 7px 18px; border-radius: 999px; border: none;
+        background: linear-gradient(135deg,#4f46e5,#6366f1); color: white;
+        font-size: 13px; font-weight: 600; cursor: pointer;
+      }
+      #create-group-cancel {
+        padding: 7px 14px; border-radius: 999px;
+        border: 1px solid rgba(148,163,184,0.3);
+        background: transparent; color: var(--text-muted); font-size: 13px; cursor: pointer;
+      }
+
+      /* ---- P7 MODAL ADMIN ---- */
+      #admin-panel-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 1001; align-items: center; justify-content: center; }
+      #admin-panel-overlay.open { display: flex; }
+
+      #admin-panel-modal {
+        background: radial-gradient(circle at top, #020617 0%, #000000 90%);
+        border: 1px solid rgba(124,58,237,0.7); border-radius: 16px;
+        padding: 24px; width: 420px; max-width: 95vw;
+        box-shadow: 0 0 40px rgba(124,58,237,0.4);
+        display: flex; flex-direction: column; gap: 16px;
+        max-height: 90vh; overflow-y: auto;
+      }
+
+      #admin-panel-modal h2 {
+        margin: 0; font-size: 16px; color: #e5e7eb;
+        display: flex; align-items: center; justify-content: space-between;
+      }
+
+      #admin-close-btn {
+        background: rgba(148,163,184,0.1); border: 1px solid rgba(148,163,184,0.2);
+        border-radius: 50%; width: 28px; height: 28px; color: #9ca3af;
+        font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      }
+
+      #admin-stats { display: flex; gap: 12px; flex-wrap: wrap; }
+
+      .admin-section {
+        display: flex; flex-direction: column; gap: 8px;
+        border: 1px solid rgba(124,58,237,0.2); border-radius: 12px; padding: 12px;
+        background: rgba(124,58,237,0.05);
+      }
+      .admin-section h3 { margin: 0; font-size: 13px; color: #c4b5fd; text-transform: uppercase; letter-spacing: 0.06em; }
+
+      .admin-textarea {
+        width: 100%; padding: 8px 12px; border-radius: 10px;
+        border: 1px solid rgba(124,58,237,0.3); background: #020617;
+        color: var(--text-primary); font-size: 13px; outline: none;
+        resize: vertical; min-height: 60px; font-family: inherit;
+      }
+      .admin-textarea:focus { box-shadow: 0 0 10px rgba(124,58,237,0.4); }
+
+      .admin-select {
+        width: 100%; padding: 7px 12px; border-radius: 999px;
+        border: 1px solid rgba(124,58,237,0.3); background: #020617;
+        color: var(--text-primary); font-size: 13px; outline: none;
+      }
+
+      .admin-btn {
+        padding: 7px 16px; border-radius: 999px; border: none;
+        background: linear-gradient(135deg,#7c3aed,#4f46e5); color: white;
+        font-size: 12px; font-weight: 600; cursor: pointer; align-self: flex-end;
+      }
+      .admin-btn:hover { filter: brightness(1.1); }
 
       @media (max-width: 900px) {
         body { padding: 0; }
@@ -460,13 +601,22 @@
               <button id="profile-btn">👤 Profilo</button>
             </div>
             <div id="contacts-list"></div>
+
+            <!-- P3 — Sezione Gruppi -->
+            <div id="groups-section">
+              <div id="groups-subheader">
+                <h2>Gruppi</h2>
+                <button id="create-group-btn">＋ Nuovo</button>
+              </div>
+              <div id="groups-list"></div>
+            </div>
           </div>
 
           <div id="chat-area">
 
             <div id="chat-placeholder">
               <div class="placeholder-icon">💬</div>
-              <div>Seleziona un contatto per iniziare una chat</div>
+              <div>Seleziona un contatto o gruppo per iniziare</div>
             </div>
 
             <div id="chat-panel">
@@ -476,7 +626,6 @@
                 <span id="chat-title-text">Chat</span>
                 <button id="audio-call-btn" class="icon-btn"></button>
                 <button id="video-call-btn" class="icon-btn"></button>
-                <!-- Pulsanti aggiunti da app.js: conference-toggle e clear-chat-btn -->
               </div>
 
               <div id="video-area">
@@ -538,14 +687,81 @@
       </div>
     </div>
 
+    <!-- P3 — MODAL CREA GRUPPO -->
+    <div id="create-group-overlay">
+      <div id="create-group-modal">
+        <h2>Crea gruppo</h2>
+        <div class="profile-field">
+          <label>Nome del gruppo</label>
+          <input id="group-name-input" type="text" placeholder="Es: Famiglia, Lavoro..." />
+        </div>
+        <div>
+          <label style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.06em;display:block;margin-bottom:6px;">Seleziona membri</label>
+          <div id="group-member-checklist"></div>
+        </div>
+        <div id="create-group-actions">
+          <button id="create-group-cancel">Annulla</button>
+          <button id="create-group-confirm">✅ Crea gruppo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- P7 — MODAL ADMIN PANEL -->
+    <div id="admin-panel-overlay">
+      <div id="admin-panel-modal">
+        <h2>
+          <span>⚙️ Pannello Admin</span>
+          <button id="admin-close-btn">✕</button>
+        </h2>
+
+        <!-- Stats -->
+        <div id="admin-stats">
+          <div style="font-size:12px;color:#9ca3af;">Caricamento statistiche...</div>
+        </div>
+
+        <!-- Broadcast a tutti -->
+        <div class="admin-section">
+          <h3>📢 Broadcast a tutti</h3>
+          <textarea id="admin-broadcast-text" class="admin-textarea" placeholder="Scrivi un messaggio per tutti gli utenti..."></textarea>
+          <button id="admin-broadcast-btn" class="admin-btn">Invia a tutti</button>
+        </div>
+
+        <!-- Messaggio a gruppo specifico -->
+        <div class="admin-section">
+          <h3>👥 Messaggio a gruppo</h3>
+          <select id="admin-group-select" class="admin-select">
+            <option value="">-- Seleziona gruppo --</option>
+          </select>
+          <textarea id="admin-group-text" class="admin-textarea" placeholder="Scrivi un messaggio per questo gruppo..."></textarea>
+          <button id="admin-group-msg-btn" class="admin-btn">Invia al gruppo</button>
+        </div>
+
+      </div>
+    </div>
+
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/app.js?v=3"></script>
+    <script src="/app.js?v=4"></script>
 
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('ZEUS SW registrato ✅', reg.scope))
+            .then(reg => {
+              console.log('ZEUS SW registrato ✅', reg.scope);
+              // P6 — salva riferimento per aggiornamento automatico
+              if (typeof swRegistration !== 'undefined') swRegistration = reg;
+              else window.swRegistration = reg;
+              reg.addEventListener('updatefound', () => {
+                const newWorker = reg.installing;
+                if (newWorker) {
+                  newWorker.addEventListener('statechange', () => {
+                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                      if (typeof showUpdateBanner === 'function') showUpdateBanner();
+                    }
+                  });
+                }
+              });
+            })
             .catch(err => console.log('SW errore:', err));
         });
       }

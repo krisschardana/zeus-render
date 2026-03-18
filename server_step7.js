@@ -1,4 +1,10 @@
+require('dotenv').config();
+const dns = require('dns');
+dns.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8']);
 // server_step7.js — ZEUS Chat — Telegram-style universal edition
+// AGGIORNATO: P1 no messages.json | P2 MongoDB | P3 Gruppi | P4 Reazioni
+//             P5 Upload 2GB | P6 /api/version | P7 Admin
+
 const express = require("express");
 const http = require("http");
 const path = require("path");
@@ -9,6 +15,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const multer = require("multer");
 const { execFile } = require("child_process");
+const mongoose = require("mongoose"); // P2
 
 const app = express();
 const server = http.createServer(app);
@@ -22,7 +29,7 @@ const io = new Server(server, {
   pingTimeout: 60000,
   pingInterval: 25000,
   upgradeTimeout: 30000,
-  maxHttpBufferSize: 50e6
+  maxHttpBufferSize: 2e9  // P5 — era 50e6, ora 2GB
 });
 
 app.use((req, res, next) => {
@@ -47,8 +54,15 @@ const SMTP_USER = process.env.SMTP_USER || "gnosis@ik.me";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || "ZEUS APP";
 
-const USERS_DB_PATH = path.join(__dirname, "users.json");
-const MESSAGES_DB_PATH = path.join(__dirname, "messages.json");
+// P2 — MongoDB URI da variabile ambiente
+const MONGODB_URI = process.env.MONGODB_URI || "";
+
+// P7 — Admin email da variabile ambiente
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+
+// P6 — Versione app — aggiorna questo valore ad ogni deploy per forzare aggiornamento
+const APP_VERSION = "3.0.0";
+
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 
 if (!fs.existsSync(UPLOADS_DIR)) {
@@ -60,127 +74,77 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   }
 }
 
-// ---- UTENTI ----
-let users = [];
+// =====================================================================
+// P2 — MONGODB — SCHEMA UTENTI
+// =====================================================================
+const UserSchema = new mongoose.Schema({
+  name:    { type: String, default: "" },
+  email:   { type: String, required: true, unique: true, lowercase: true, trim: true },
+  phone:   { type: String, default: "" },
+  address: { type: String, default: "" },
+  avatar:  { type: String, default: "" },
+}, { timestamps: true });
 
+const User = mongoose.model("User", UserSchema);
+
+// P3 — Schema Gruppi
+const GroupSchema = new mongoose.Schema({
+  groupId:      { type: String, required: true, unique: true },
+  name:         { type: String, required: true },
+  creatorEmail: { type: String, required: true, lowercase: true, trim: true },
+  members:      [{ type: String, lowercase: true, trim: true }],
+}, { timestamps: true });
+
+const Group = mongoose.model("Group", GroupSchema);
+
+// Connessione MongoDB
+async function connectMongoDB() {
+  if (!MONGODB_URI) {
+    console.warn("MONGODB_URI non impostata — MongoDB non connesso.");
+    return;
+  }
+  try {
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+    });
+    console.log("MongoDB Atlas connesso ✅");
+  } catch (err) {
+    console.error("Errore connessione MongoDB:", err.message);
+  }
+}
+
+connectMongoDB();
+
+// =====================================================================
+// HELPER
+// =====================================================================
 function normalizeEmail(email) {
   return (email || "").trim().toLowerCase();
-}
-
-function loadUsersFromFile() {
-  try {
-    if (fs.existsSync(USERS_DB_PATH)) {
-      const raw = fs.readFileSync(USERS_DB_PATH, "utf8");
-      const data = JSON.parse(raw);
-      if (Array.isArray(data)) {
-        users = data;
-        console.log("Rubrica caricata:", users.length, "utenti.");
-      }
-    } else {
-      console.log("Nessun users.json trovato, rubrica vuota.");
-    }
-  } catch (err) {
-    console.error("Errore lettura users.json:", err);
-  }
-}
-
-function saveUsersToFile() {
-  try {
-    fs.writeFileSync(USERS_DB_PATH, JSON.stringify(users, null, 2), "utf8");
-  } catch (err) {
-    console.error("Errore salvataggio users.json:", err);
-  }
-}
-
-loadUsersFromFile();
-
-// ---- MESSAGGI ----
-let messagesDB = {};
-
-// FIX: pulizia automatica BOM e conflitti Git — non richiede mai intervento manuale
-function loadMessagesFromFile() {
-  try {
-    if (fs.existsSync(MESSAGES_DB_PATH)) {
-      let raw = fs.readFileSync(MESSAGES_DB_PATH, "utf8");
-      raw = raw.replace(/^\uFEFF/, "").trim();
-      if (raw.includes("<<<<<<<") || raw.includes(">>>>>>>") || raw.includes("=======")) {
-        console.log("messages.json corrotto (conflitto Git), reset automatico.");
-        messagesDB = {};
-        saveMessagesToFile();
-        return;
-      }
-      if (!raw || raw.length === 0) {
-        messagesDB = {};
-        return;
-      }
-      messagesDB = JSON.parse(raw) || {};
-      let total = 0;
-      Object.values(messagesDB).forEach((arr) => { total += arr.length; });
-      console.log("Messaggi caricati:", total, "messaggi totali.");
-    } else {
-      console.log("Nessun messages.json trovato, storico vuoto.");
-      messagesDB = {};
-      saveMessagesToFile();
-    }
-  } catch (err) {
-    console.error("Errore lettura messages.json, reset automatico:", err.message);
-    messagesDB = {};
-    saveMessagesToFile();
-  }
-}
-
-function saveMessagesToFile() {
-  try {
-    fs.writeFileSync(MESSAGES_DB_PATH, JSON.stringify(messagesDB), "utf8");
-  } catch (err) {
-    console.error("Errore salvataggio messages.json:", err);
-  }
-}
-
-function getChatKey(emailA, emailB) {
-  return [normalizeEmail(emailA), normalizeEmail(emailB)].sort().join("__");
 }
 
 function generateMsgId() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-function saveMessage(fromEmail, toEmail, text, type = "private") {
-  const key = getChatKey(fromEmail, toEmail);
-  if (!messagesDB[key]) messagesDB[key] = [];
-  const msg = {
-    id: generateMsgId(),
-    from: normalizeEmail(fromEmail),
-    to: normalizeEmail(toEmail),
-    text,
-    ts: Date.now(),
-    type
-  };
-  messagesDB[key].push(msg);
-  if (messagesDB[key].length > 500) messagesDB[key] = messagesDB[key].slice(-500);
-  saveMessagesToFile();
-  return msg;
+function generateGroupId() {
+  return "grp_" + crypto.randomBytes(12).toString("hex");
 }
 
-function getMessages(emailA, emailB, limit = 100) {
-  const key = getChatKey(emailA, emailB);
-  const msgs = messagesDB[key] || [];
-  return msgs.slice(-limit);
-}
-
-loadMessagesFromFile();
-
-// ---- MAPPA SOCKET PER EMAIL ----
+// =====================================================================
+// MAPPA SOCKET PER EMAIL
+// =====================================================================
 const onlineSocketsByEmail = {};
 const socketsByEmail = {};
 const pendingOtps = {};
 const typingTimers = {};
 
-app.use(bodyParser.json({ limit: "50mb" }));
+app.use(bodyParser.json({ limit: "100mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-// ---- EMAIL ----
+// =====================================================================
+// EMAIL
+// =====================================================================
 let transporter = null;
 
 if (!TEST_MODE) {
@@ -194,9 +158,9 @@ if (!TEST_MODE) {
   console.log("TEST_MODE = true, email non inviate.");
 }
 
-function generateOtp() { return crypto.randomInt(100000, 999999).toString(); }
-
-// ---- UPLOAD FILE ----
+// =====================================================================
+// UPLOAD FILE — P5: limite 2GB
+// =====================================================================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) { cb(null, UPLOADS_DIR); },
   filename: function (req, file, cb) {
@@ -205,9 +169,12 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
+// P5 — era 50MB, ora 2GB
+const upload = multer({ storage, limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
 
-// ---- TROVA FFMPEG ----
+// =====================================================================
+// TROVA FFMPEG
+// =====================================================================
 const FFMPEG_PATHS = [
   "/usr/bin/ffmpeg",
   "/usr/local/bin/ffmpeg",
@@ -237,8 +204,9 @@ function findFfmpeg() {
 
 findFfmpeg();
 
-// ---- UPLOAD ENDPOINT ----
-// FIX: async — attende ffmpeg prima di rispondere, iPhone riceve MP4 già pronto
+// =====================================================================
+// UPLOAD ENDPOINT
+// =====================================================================
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Nessun file caricato." });
 
@@ -279,7 +247,6 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 
     const finalUrl = converted ? ("/uploads/" + outputName) : publicUrl;
     const finalMime = converted ? "video/mp4" : req.file.mimetype;
-    console.log("Video pronto per il client:", finalUrl);
     return res.json({
       ok: true,
       url: finalUrl,
@@ -289,7 +256,6 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     });
   }
 
-  console.log("File caricato:", req.file.originalname, "->", publicUrl);
   return res.json({
     ok: true,
     url: publicUrl,
@@ -299,17 +265,31 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   });
 });
 
-// ---- LOGIN ----
+// =====================================================================
+// P6 — VERSIONE APP
+// =====================================================================
+app.get("/api/version", (req, res) => {
+  res.json({ version: APP_VERSION });
+});
+
+// =====================================================================
+// LOGIN — P2: usa MongoDB
+// =====================================================================
 app.post("/api/login-request", async (req, res) => {
   const { name, email } = req.body || {};
   if (!name || !email) return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
   const emailNorm = normalizeEmail(email);
-  let user = users.find((u) => normalizeEmail(u.email) === emailNorm);
-  if (!user) { user = { name, email: emailNorm }; users.push(user); saveUsersToFile(); }
-  return res.json({ ok: true, user });
+  try {
+    let user = await User.findOne({ email: emailNorm });
+    if (!user) user = await User.create({ name, email: emailNorm });
+    return res.json({ ok: true, user });
+  } catch (err) {
+    console.error("login-request error:", err);
+    return res.json({ ok: false, error: "Errore server." });
+  }
 });
 
-app.post("/api/login-verify", (req, res) => {
+app.post("/api/login-verify", async (req, res) => {
   const { name, email, code } = req.body || {};
   if (!name || !email || !code) return res.json({ ok: false, error: "Dati mancanti." });
   const emailNorm = normalizeEmail(email);
@@ -318,95 +298,250 @@ app.post("/api/login-verify", (req, res) => {
   if (Date.now() > otpData.expiresAt) { delete pendingOtps[emailNorm]; return res.json({ ok: false, error: "OTP scaduto." }); }
   if (otpData.code !== code) return res.json({ ok: false, error: "OTP non valido." });
   delete pendingOtps[emailNorm];
-  let user = users.find((u) => normalizeEmail(u.email) === emailNorm);
-  if (!user) { user = { name, email: emailNorm }; users.push(user); saveUsersToFile(); }
-  return res.json({ ok: true, user });
+  try {
+    let user = await User.findOne({ email: emailNorm });
+    if (!user) user = await User.create({ name, email: emailNorm });
+    return res.json({ ok: true, user });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { name, email } = req.body || {};
   if (!name || !email) return res.json({ ok: false, error: "Nome ed email sono obbligatori." });
   const emailNorm = normalizeEmail(email);
-  let user = users.find((u) => normalizeEmail(u.email) === emailNorm);
-  if (!user) { user = { name, email: emailNorm }; users.push(user); saveUsersToFile(); }
-  else { user.email = emailNorm; }
-  return res.json({ ok: true, user });
+  try {
+    let user = await User.findOneAndUpdate(
+      { email: emailNorm },
+      { $set: { name } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return res.json({ ok: true, user });
+  } catch (err) {
+    console.error("login error:", err);
+    return res.json({ ok: false, error: "Errore server." });
+  }
 });
 
-// ---- LISTA UTENTI ----
-app.get("/api/users", (req, res) => { res.json(users); });
-
-// ---- STORICO MESSAGGI ----
-app.get("/api/messages", (req, res) => {
-  const { emailA, emailB, limit } = req.query;
-  if (!emailA || !emailB) return res.status(400).json({ ok: false, error: "emailA e emailB obbligatori." });
-  const msgs = getMessages(emailA, emailB, parseInt(limit || "100", 10));
-  let changed = false;
-  const enriched = msgs.map((m) => {
-    if (!m.id) { m.id = generateMsgId(); changed = true; }
-    const fromUser = users.find((u) => normalizeEmail(u.email) === normalizeEmail(m.from)) || { email: m.from, name: m.from };
-    return { ...m, fromUser };
-  });
-  if (changed) saveMessagesToFile();
-  res.json({ ok: true, messages: enriched });
+// =====================================================================
+// LISTA UTENTI — P2: MongoDB
+// =====================================================================
+app.get("/api/users", async (req, res) => {
+  try {
+    const users = await User.find({}, { __v: 0 }).lean();
+    res.json(users);
+  } catch (err) {
+    res.json([]);
+  }
 });
 
-// ---- ELIMINA SINGOLO MESSAGGIO ----
+// =====================================================================
+// P1 — STORICO MESSAGGI RIMOSSO DAL SERVER
+// I messaggi ora si salvano solo sul dispositivo (localStorage nel client)
+// Il server fa solo relay — non salva nulla
+// Mantenuto solo l'endpoint DELETE per pulire la chat (emette evento socket)
+// =====================================================================
+
+// =====================================================================
+// ELIMINA SINGOLO MESSAGGIO — ora solo relay socket, niente DB
+// =====================================================================
 app.delete("/api/messages/single", (req, res) => {
   const { emailA, emailB, msgId } = req.query;
   if (!emailA || !emailB || !msgId) return res.status(400).json({ ok: false, error: "emailA, emailB e msgId obbligatori." });
-  const key = getChatKey(emailA, emailB);
-  if (!messagesDB[key]) return res.json({ ok: false, error: "Chat non trovata." });
-  const before = messagesDB[key].length;
-  messagesDB[key] = messagesDB[key].filter(m => m.id !== msgId);
-  if (messagesDB[key].length === before) return res.json({ ok: false, error: "Messaggio non trovato." });
-  saveMessagesToFile();
-  console.log("Messaggio eliminato:", msgId);
+  // Relay agli utenti — il client rimuove da localStorage
+  emitToUser(normalizeEmail(emailA), "message-deleted", { msgId });
+  emitToUser(normalizeEmail(emailB), "message-deleted", { msgId });
   return res.json({ ok: true });
 });
 
-// ---- PULISCI INTERA CHAT ----
+// =====================================================================
+// PULISCI INTERA CHAT — relay socket, niente DB
+// =====================================================================
 app.delete("/api/messages", (req, res) => {
   const { emailA, emailB } = req.query;
   if (!emailA || !emailB) return res.status(400).json({ ok: false, error: "emailA e emailB obbligatori." });
-  const key = getChatKey(emailA, emailB);
-  messagesDB[key] = [];
-  saveMessagesToFile();
-  console.log("Chat pulita:", key);
   emitToUser(normalizeEmail(emailA), "chat-cleared", { byEmail: normalizeEmail(emailA) });
   emitToUser(normalizeEmail(emailB), "chat-cleared", { byEmail: normalizeEmail(emailA) });
   return res.json({ ok: true });
 });
 
-// ---- PROFILO UTENTE ----
-app.post("/api/profile", (req, res) => {
+// =====================================================================
+// PROFILO UTENTE — P2: MongoDB
+// =====================================================================
+app.post("/api/profile", async (req, res) => {
   const { email, name, phone, address, avatar } = req.body || {};
   if (!email) return res.json({ ok: false, error: "Email obbligatoria." });
   const emailNorm = normalizeEmail(email);
-  const userIndex = users.findIndex((u) => normalizeEmail(u.email) === emailNorm);
-  if (userIndex === -1) return res.json({ ok: false, error: "Utente non trovato." });
-  if (name) users[userIndex].name = name;
-  if (typeof phone !== "undefined") users[userIndex].phone = phone;
-  if (typeof address !== "undefined") users[userIndex].address = address;
-  if (typeof avatar !== "undefined") users[userIndex].avatar = avatar;
-  saveUsersToFile();
-  console.log("Profilo aggiornato per:", emailNorm);
-  return res.json({ ok: true, user: users[userIndex] });
+  try {
+    const update = {};
+    if (name)                        update.name = name;
+    if (typeof phone !== "undefined")   update.phone = phone;
+    if (typeof address !== "undefined") update.address = address;
+    if (typeof avatar !== "undefined")  update.avatar = avatar;
+    const user = await User.findOneAndUpdate(
+      { email: emailNorm },
+      { $set: update },
+      { new: true }
+    );
+    if (!user) return res.json({ ok: false, error: "Utente non trovato." });
+    console.log("Profilo aggiornato per:", emailNorm);
+    return res.json({ ok: true, user });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
 });
 
-// ---- ELIMINA UTENTE ----
-app.delete("/api/users/:email", (req, res) => {
+// =====================================================================
+// ELIMINA UTENTE — P2: MongoDB
+// =====================================================================
+app.delete("/api/users/:email", async (req, res) => {
   const emailParam = normalizeEmail(req.params.email || "");
   if (!emailParam) return res.status(400).json({ ok: false, error: "Email mancante." });
-  const before = users.length;
-  users = users.filter((u) => normalizeEmail(u.email) !== emailParam);
-  if (users.length === before) return res.json({ ok: false, error: "Utente non trovato." });
-  saveUsersToFile();
-  console.log("Utente rimosso:", emailParam);
+  try {
+    const result = await User.deleteOne({ email: emailParam });
+    if (result.deletedCount === 0) return res.json({ ok: false, error: "Utente non trovato." });
+    console.log("Utente rimosso:", emailParam);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
+});
+
+// =====================================================================
+// P3 — GRUPPI — Endpoints REST
+// =====================================================================
+
+// Crea gruppo
+app.post("/api/groups/create", async (req, res) => {
+  const { name, creatorEmail, members } = req.body || {};
+  if (!name || !creatorEmail || !Array.isArray(members) || members.length < 1) {
+    return res.json({ ok: false, error: "name, creatorEmail e members[] obbligatori." });
+  }
+  const creatorNorm = normalizeEmail(creatorEmail);
+  const membersNorm = members.map(normalizeEmail);
+  // Assicura che il creatore sia nei membri
+  if (!membersNorm.includes(creatorNorm)) membersNorm.push(creatorNorm);
+  const groupId = generateGroupId();
+  try {
+    const group = await Group.create({ groupId, name, creatorEmail: creatorNorm, members: membersNorm });
+    console.log("Gruppo creato:", groupId, name, "membri:", membersNorm);
+    // Notifica tutti i membri
+    membersNorm.forEach(memberEmail => {
+      emitToUser(memberEmail, "group-created", { group: group.toObject() });
+    });
+    // P7 — notifica admin
+    if (ADMIN_EMAIL) {
+      emitToUser(ADMIN_EMAIL, "admin-group-created", {
+        group: group.toObject(),
+        ts: Date.now()
+      });
+    }
+    return res.json({ ok: true, group });
+  } catch (err) {
+    console.error("Errore crea gruppo:", err);
+    return res.json({ ok: false, error: "Errore creazione gruppo." });
+  }
+});
+
+// Lista gruppi per utente
+app.get("/api/groups", async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.json({ ok: false, error: "Email obbligatoria." });
+  const emailNorm = normalizeEmail(email);
+  try {
+    const groups = await Group.find({ members: emailNorm }).lean();
+    return res.json({ ok: true, groups });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
+});
+
+// Tutti i gruppi (per admin)
+app.get("/api/groups/all", async (req, res) => {
+  const { adminEmail } = req.query;
+  if (!ADMIN_EMAIL || normalizeEmail(adminEmail) !== ADMIN_EMAIL) {
+    return res.status(403).json({ ok: false, error: "Non autorizzato." });
+  }
+  try {
+    const groups = await Group.find({}).lean();
+    return res.json({ ok: true, groups });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
+});
+
+// =====================================================================
+// P7 — ADMIN — Endpoints
+// =====================================================================
+
+// Stats
+app.get("/api/admin/stats", async (req, res) => {
+  const { adminEmail } = req.query;
+  if (!ADMIN_EMAIL || normalizeEmail(adminEmail) !== ADMIN_EMAIL) {
+    return res.status(403).json({ ok: false, error: "Non autorizzato." });
+  }
+  try {
+    const totalUsers  = await User.countDocuments();
+    const totalGroups = await Group.countDocuments();
+    const onlineCount = Object.keys(onlineSocketsByEmail).length;
+    return res.json({ ok: true, totalUsers, totalGroups, onlineCount });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
+});
+
+// Broadcast a tutti gli utenti
+app.post("/api/admin/broadcast", async (req, res) => {
+  const { adminEmail, text } = req.body || {};
+  if (!ADMIN_EMAIL || normalizeEmail(adminEmail) !== ADMIN_EMAIL) {
+    return res.status(403).json({ ok: false, error: "Non autorizzato." });
+  }
+  if (!text) return res.json({ ok: false, error: "Testo obbligatorio." });
+  const adminUser = { email: ADMIN_EMAIL, name: "⚡ ZEUS Admin" };
+  const payload = {
+    id: generateMsgId(),
+    from: adminUser,
+    text,
+    ts: Date.now(),
+    isAdmin: true
+  };
+  io.emit("admin-broadcast", payload);
+  console.log("Admin broadcast:", text);
   return res.json({ ok: true });
 });
 
-// ---- HELPER: invia evento a tutti i socket di un utente ----
+// Messaggio a gruppo specifico
+app.post("/api/admin/message-group", async (req, res) => {
+  const { adminEmail, groupId, text } = req.body || {};
+  if (!ADMIN_EMAIL || normalizeEmail(adminEmail) !== ADMIN_EMAIL) {
+    return res.status(403).json({ ok: false, error: "Non autorizzato." });
+  }
+  if (!groupId || !text) return res.json({ ok: false, error: "groupId e text obbligatori." });
+  try {
+    const group = await Group.findOne({ groupId }).lean();
+    if (!group) return res.json({ ok: false, error: "Gruppo non trovato." });
+    const adminUser = { email: ADMIN_EMAIL, name: "⚡ ZEUS Admin" };
+    const payload = {
+      id: generateMsgId(),
+      from: adminUser,
+      text,
+      groupId,
+      ts: Date.now(),
+      isAdmin: true
+    };
+    group.members.forEach(memberEmail => {
+      emitToUser(memberEmail, "group-message", payload);
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.json({ ok: false, error: "Errore server." });
+  }
+});
+
+// =====================================================================
+// HELPER: invia evento a tutti i socket di un utente
+// =====================================================================
 function emitToUser(email, event, data) {
   const emailNorm = normalizeEmail(email);
   const sockets = socketsByEmail[emailNorm];
@@ -417,7 +552,9 @@ function emitToUser(email, event, data) {
   return true;
 }
 
-// ---- SOCKET.IO ----
+// =====================================================================
+// SOCKET.IO
+// =====================================================================
 io.on("connection", (socket) => {
   console.log("Utente connesso:", socket.id);
 
@@ -442,12 +579,13 @@ io.on("connection", (socket) => {
     io.emit("chat-message", { from, text, ts: Date.now() });
   });
 
+  // P1 — private-message: solo relay, non salva nulla sul server
   socket.on("private-message", ({ toEmail, text }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !text) return;
     const toEmailNorm = normalizeEmail(toEmail);
-    const saved = saveMessage(from.email, toEmailNorm, text, "private");
-    const payload = { id: saved.id, from, text, ts: saved.ts };
+    const msgId = generateMsgId();
+    const payload = { id: msgId, from, text, ts: Date.now() };
     emitToUser(toEmailNorm, "private-message", payload);
     emitToUser(from.email, "private-message", payload);
   });
@@ -456,11 +594,6 @@ io.on("connection", (socket) => {
     const from = socket.data.user;
     if (!from || !toEmail || !msgId) return;
     const toEmailNorm = normalizeEmail(toEmail);
-    const key = getChatKey(from.email, toEmailNorm);
-    if (messagesDB[key]) {
-      messagesDB[key] = messagesDB[key].filter(m => m.id !== msgId);
-      saveMessagesToFile();
-    }
     emitToUser(toEmailNorm, "message-deleted", { msgId });
     emitToUser(from.email, "message-deleted", { msgId });
   });
@@ -507,17 +640,104 @@ io.on("connection", (socket) => {
     }
   });
 
+  // P4 — Reazioni messaggi: relay a entrambi gli utenti
+  socket.on("message-reaction", ({ toEmail, msgId, emoji }) => {
+    const from = socket.data.user;
+    if (!from || !toEmail || !msgId || !emoji) return;
+    const toEmailNorm = normalizeEmail(toEmail);
+    const payload = { msgId, emoji, fromEmail: from.email, ts: Date.now() };
+    emitToUser(toEmailNorm, "message-reaction", payload);
+    emitToUser(from.email, "message-reaction", payload);
+  });
+
+  // P3 — Gruppi: group-message relay a tutti i membri
+  socket.on("group-message", async ({ groupId, text }) => {
+    const from = socket.data.user;
+    if (!from || !groupId || !text) return;
+    try {
+      const group = await Group.findOne({ groupId }).lean();
+      if (!group) return;
+      if (!group.members.includes(from.email)) return; // sicurezza
+      const msgId = generateMsgId();
+      const payload = { id: msgId, from, text, groupId, ts: Date.now() };
+      group.members.forEach(memberEmail => {
+        emitToUser(memberEmail, "group-message", payload);
+      });
+    } catch (err) {
+      console.error("group-message error:", err);
+    }
+  });
+
+  // P3 — Vocali nel gruppo
+  socket.on("group-voice", async ({ groupId, audio }) => {
+    const from = socket.data.user;
+    if (!from || !groupId || !audio) return;
+    try {
+      const group = await Group.findOne({ groupId }).lean();
+      if (!group) return;
+      if (!group.members.includes(from.email)) return;
+      const payload = { from, audio, groupId, ts: Date.now() };
+      group.members.forEach(memberEmail => {
+        emitToUser(memberEmail, "group-voice", payload);
+      });
+    } catch (err) {
+      console.error("group-voice error:", err);
+    }
+  });
+
+  // P3 — Allegati nel gruppo
+  socket.on("group-file", async ({ groupId, text }) => {
+    const from = socket.data.user;
+    if (!from || !groupId || !text) return;
+    try {
+      const group = await Group.findOne({ groupId }).lean();
+      if (!group) return;
+      if (!group.members.includes(from.email)) return;
+      const msgId = generateMsgId();
+      const payload = { id: msgId, from, text, groupId, ts: Date.now() };
+      group.members.forEach(memberEmail => {
+        emitToUser(memberEmail, "group-message", payload);
+      });
+    } catch (err) {
+      console.error("group-file error:", err);
+    }
+  });
+
+  // P3 — Typing nel gruppo
+  socket.on("group-typing-start", async ({ groupId }) => {
+    const from = socket.data.user;
+    if (!from || !groupId) return;
+    try {
+      const group = await Group.findOne({ groupId }).lean();
+      if (!group) return;
+      group.members.forEach(memberEmail => {
+        if (memberEmail !== from.email) emitToUser(memberEmail, "group-typing-start", { from, groupId });
+      });
+    } catch {}
+  });
+
+  socket.on("group-typing-stop", async ({ groupId }) => {
+    const from = socket.data.user;
+    if (!from || !groupId) return;
+    try {
+      const group = await Group.findOne({ groupId }).lean();
+      if (!group) return;
+      group.members.forEach(memberEmail => {
+        if (memberEmail !== from.email) emitToUser(memberEmail, "group-typing-stop", { from, groupId });
+      });
+    } catch {}
+  });
+
+  // WebRTC — invariato
   socket.on("call-offer", ({ toEmail, offer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !offer) return;
-    console.log("call-offer da", from.email, "a", toEmail, "mode:", mode);
     emitToUser(normalizeEmail(toEmail), "call-offer", { from, offer, mode: mode || "audio" });
   });
 
   socket.on("call-answer", ({ toEmail, answer, mode }) => {
     const from = socket.data.user;
     if (!from || !toEmail || !answer) return;
-    console.log("call-answer da", from.email, "a", toEmail);
     emitToUser(normalizeEmail(toEmail), "call-answer", { from, answer, mode: mode || "audio" });
   });
 

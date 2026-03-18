@@ -1,6 +1,7 @@
 // =====================================================================
-// ZEUS Chat — app.js — Universal edition v3
-// PWA banner universale + fix video iPhone + elimina msg + pulisci chat
+// ZEUS Chat — app.js — Universal edition v4
+// P1: localStorage messaggi | P3: Gruppi | P4: Reazioni
+// P5: Upload 2GB | P6: SW aggiornamento auto | P7: Admin panel
 // =====================================================================
 
 // ---- SESSIONE ----
@@ -33,6 +34,7 @@ socket.on("reconnect", () => {
   if (currentUser) {
     socket.emit("set-user", currentUser);
     if (selectedContactEmail) loadMessageHistory(selectedContactEmail);
+    if (selectedGroupId) loadGroupHistory(selectedGroupId);
     while (offlineQueue.length > 0) socket.emit("private-message", offlineQueue.shift());
     appendSystemMessage("Riconnesso ✅");
   }
@@ -88,8 +90,11 @@ document.addEventListener('touchstart', () => {
 // =====================================================================
 let currentUser = null;
 let selectedContactEmail = null;
+let selectedGroupId = null;        // P3
+let selectedGroupData = null;      // P3
 let onlineUsers = {};
 const unreadCounts = {};
+const unreadGroupCounts = {};      // P3
 
 let conferenceMode = false;
 let conferenceIframe = null;
@@ -112,12 +117,14 @@ let ringtoneInterval = null, ringtoneOscRunning = false;
 let typingTimeout = null, isTyping = false, typingHideTimeout = null;
 let notificationsEnabled = false;
 
-// TURN server — credenziali dinamiche via API Metered
-// Quando avrai VPS: cambi solo METERED_API_KEY con le tue credenziali coturn
+// P6 — versione SW
+let currentAppVersion = null;
+let swRegistration = null;
+
+// TURN server
 const METERED_API_KEY = "e154c9491970e12ad7e1f31f9361311cb6b0";
 const METERED_API_URL = `https://zeus-call.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`;
 
-// rtcConfig base — usato finché non arrivano le credenziali dinamiche
 let rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -134,7 +141,6 @@ let rtcConfig = {
   iceTransportPolicy: "all"
 };
 
-// Carica credenziali aggiornate da API Metered all'avvio
 async function loadTurnCredentials() {
   try {
     const res = await fetch(METERED_API_URL);
@@ -179,6 +185,89 @@ const chatAreaEl = document.getElementById("chat-area");
 videoArea = document.getElementById("video-area");
 localVideoElement = document.getElementById("localVideo");
 remoteVideoElement = document.getElementById("remoteVideo");
+
+// =====================================================================
+// P1 — LOCALSTORAGE MESSAGGI
+// =====================================================================
+function getLocalKey(emailA, emailB) {
+  return "zeus_msgs__" + [emailA, emailB].sort().join("__");
+}
+
+function saveMessageToLocal(peerEmail, msgObj) {
+  if (!currentUser || !peerEmail) return;
+  const key = getLocalKey(currentUser.email, peerEmail);
+  try {
+    let msgs = [];
+    const raw = localStorage.getItem(key);
+    if (raw) msgs = JSON.parse(raw);
+    msgs.push(msgObj);
+    if (msgs.length > 500) msgs = msgs.slice(-500);
+    localStorage.setItem(key, JSON.stringify(msgs));
+  } catch(e) { console.error("Errore salvataggio localStorage:", e); }
+}
+
+function loadMessagesFromLocal(peerEmail) {
+  if (!currentUser || !peerEmail) return [];
+  const key = getLocalKey(currentUser.email, peerEmail);
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e) { return []; }
+}
+
+function deleteMessageFromLocal(peerEmail, msgId) {
+  if (!currentUser || !peerEmail) return;
+  const key = getLocalKey(currentUser.email, peerEmail);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    let msgs = JSON.parse(raw);
+    msgs = msgs.filter(m => m.id !== msgId);
+    localStorage.setItem(key, JSON.stringify(msgs));
+  } catch(e) {}
+}
+
+function clearMessagesFromLocal(peerEmail) {
+  if (!currentUser || !peerEmail) return;
+  const key = getLocalKey(currentUser.email, peerEmail);
+  try { localStorage.removeItem(key); } catch(e) {}
+}
+
+// P3 — localStorage per gruppi
+function getGroupLocalKey(groupId) {
+  return "zeus_grp__" + groupId;
+}
+
+function saveGroupMessageToLocal(groupId, msgObj) {
+  const key = getGroupLocalKey(groupId);
+  try {
+    let msgs = [];
+    const raw = localStorage.getItem(key);
+    if (raw) msgs = JSON.parse(raw);
+    msgs.push(msgObj);
+    if (msgs.length > 500) msgs = msgs.slice(-500);
+    localStorage.setItem(key, JSON.stringify(msgs));
+  } catch(e) {}
+}
+
+function loadGroupMessagesFromLocal(groupId) {
+  const key = getGroupLocalKey(groupId);
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e) { return []; }
+}
+
+function deleteGroupMessageFromLocal(groupId, msgId) {
+  const key = getGroupLocalKey(groupId);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    let msgs = JSON.parse(raw);
+    msgs = msgs.filter(m => m.id !== msgId);
+    localStorage.setItem(key, JSON.stringify(msgs));
+  } catch(e) {}
+}
 
 // =====================================================================
 // PWA INSTALL BANNER — UNIVERSALE
@@ -329,9 +418,7 @@ function dismissInstallBanner(installed) {
     setTimeout(() => { if (installBanner) { installBanner.remove(); installBanner = null; } }, 280);
   }
   try {
-    const futureTs = installed
-      ? Date.now() + 365 * 86400000
-      : Date.now();
+    const futureTs = installed ? Date.now() + 365 * 86400000 : Date.now();
     localStorage.setItem(PWA_DISMISS_KEY, futureTs.toString());
   } catch(e) {}
 }
@@ -349,6 +436,53 @@ function initPWABanner() {
     }, 1500);
   }
 }
+
+// =====================================================================
+// P6 — AGGIORNAMENTO AUTOMATICO SW
+// =====================================================================
+async function checkAppVersion() {
+  try {
+    const res = await fetch("/api/version?ts=" + Date.now());
+    const data = await res.json();
+    if (!data || !data.version) return;
+    if (!currentAppVersion) {
+      currentAppVersion = data.version;
+      localStorage.setItem("zeus_app_version", currentAppVersion);
+      return;
+    }
+    const savedVersion = localStorage.getItem("zeus_app_version");
+    if (data.version !== savedVersion) {
+      console.log("Nuova versione disponibile:", data.version);
+      localStorage.setItem("zeus_app_version", data.version);
+      showUpdateBanner();
+    }
+  } catch(e) {}
+}
+
+function showUpdateBanner() {
+  if (document.getElementById("zeus-update-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "zeus-update-banner";
+  banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9998;background:linear-gradient(135deg,#1e3a8a,#2563eb);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-family:system-ui,sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.5);";
+  const txt = document.createElement("span");
+  txt.style.cssText = "font-size:13px;color:#fff;font-weight:500;";
+  txt.textContent = "⚡ Aggiornamento disponibile!";
+  const btn = document.createElement("button");
+  btn.style.cssText = "padding:6px 14px;border:none;border-radius:999px;background:#fff;color:#1e3a8a;font-size:12px;font-weight:700;cursor:pointer;";
+  btn.textContent = "Aggiorna ora";
+  btn.addEventListener("click", () => {
+    if (swRegistration && swRegistration.waiting) {
+      swRegistration.waiting.postMessage({ type: "SKIP_WAITING" });
+    }
+    window.location.reload();
+  });
+  banner.appendChild(txt);
+  banner.appendChild(btn);
+  document.body.appendChild(banner);
+}
+
+// Controlla versione ogni 5 minuti
+setInterval(checkAppVersion, 5 * 60 * 1000);
 
 // =====================================================================
 // SUONERIA
@@ -437,6 +571,16 @@ function clearUnread(email) {
   unreadCounts[email] = 0;
   updateUnreadUI();
 }
+function incrementUnreadGroup(groupId) {
+  if (!groupId || (selectedGroupId === groupId && document.hasFocus())) return;
+  unreadGroupCounts[groupId] = (unreadGroupCounts[groupId] || 0) + 1;
+  updateUnreadUI();
+}
+function clearUnreadGroup(groupId) {
+  if (!groupId) return;
+  unreadGroupCounts[groupId] = 0;
+  updateUnreadUI();
+}
 function updateUnreadUI() {
   document.querySelectorAll(".contact").forEach(c => {
     const email = c.dataset.email;
@@ -452,7 +596,23 @@ function updateUnreadUI() {
       badge.textContent = count > 99 ? "99+" : count;
     } else { if (badge) badge.remove(); }
   });
-  const total = Object.values(unreadCounts).reduce((a,b) => a+b, 0);
+  document.querySelectorAll(".group-item").forEach(g => {
+    const groupId = g.dataset.groupId;
+    let badge = g.querySelector(".unread-badge");
+    const count = unreadGroupCounts[groupId] || 0;
+    if (count > 0) {
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "unread-badge";
+        badge.style.cssText = "background:#6366f1;color:#fff;border-radius:999px;font-size:10px;font-weight:700;padding:1px 6px;min-width:18px;text-align:center;flex-shrink:0;";
+        g.appendChild(badge);
+      }
+      badge.textContent = count > 99 ? "99+" : count;
+    } else { if (badge) badge.remove(); }
+  });
+  const totalPrivate = Object.values(unreadCounts).reduce((a,b) => a+b, 0);
+  const totalGroup = Object.values(unreadGroupCounts).reduce((a,b) => a+b, 0);
+  const total = totalPrivate + totalGroup;
   document.title = total > 0 ? `(${total}) ZEUS Chat` : "ZEUS Chat";
 }
 
@@ -461,14 +621,20 @@ function updateUnreadUI() {
 // =====================================================================
 function openChat(user) {
   selectedContactEmail = user.email;
+  selectedGroupId = null;
+  selectedGroupData = null;
   chatTitleText.textContent = user.name;
   if (user.avatar) { chatHeaderAvatar.src = user.avatar; chatHeaderAvatar.style.display = "block"; }
   else chatHeaderAvatar.style.display = "none";
   if (chatPlaceholder) chatPlaceholder.style.display = "none";
   if (chatPanel) chatPanel.style.display = "flex";
+  // Mostra pulsanti chiamata
+  if (audioCallBtn) audioCallBtn.style.display = "inline-flex";
+  if (videoCallBtn) videoCallBtn.style.display = "inline-flex";
   document.querySelectorAll(".contact").forEach(c => {
     c.classList.toggle("selected", c.dataset.email === user.email);
   });
+  document.querySelectorAll(".group-item").forEach(g => g.classList.remove("selected"));
   if (window.innerWidth <= 640) {
     contactsEl && contactsEl.classList.add("hidden-mobile");
     chatAreaEl && chatAreaEl.classList.add("visible-mobile");
@@ -478,14 +644,43 @@ function openChat(user) {
   if (input) input.focus();
 }
 
+function openGroupChat(group) {
+  selectedGroupId = group.groupId;
+  selectedGroupData = group;
+  selectedContactEmail = null;
+  chatTitleText.textContent = "👥 " + group.name;
+  if (chatHeaderAvatar) chatHeaderAvatar.style.display = "none";
+  if (chatPlaceholder) chatPlaceholder.style.display = "none";
+  if (chatPanel) chatPanel.style.display = "flex";
+  // Nascondi pulsanti chiamata nei gruppi
+  if (audioCallBtn) audioCallBtn.style.display = "none";
+  if (videoCallBtn) videoCallBtn.style.display = "none";
+  document.querySelectorAll(".group-item").forEach(g => {
+    g.classList.toggle("selected", g.dataset.groupId === group.groupId);
+  });
+  document.querySelectorAll(".contact").forEach(c => c.classList.remove("selected"));
+  if (window.innerWidth <= 640) {
+    contactsEl && contactsEl.classList.add("hidden-mobile");
+    chatAreaEl && chatAreaEl.classList.add("visible-mobile");
+  }
+  clearUnreadGroup(group.groupId);
+  loadGroupHistory(group.groupId);
+  if (input) input.focus();
+}
+
 function closeChat() {
   selectedContactEmail = null;
+  selectedGroupId = null;
+  selectedGroupData = null;
   if (chatPanel) chatPanel.style.display = "none";
   if (chatPlaceholder) chatPlaceholder.style.display = "flex";
   document.querySelectorAll(".contact").forEach(c => c.classList.remove("selected"));
+  document.querySelectorAll(".group-item").forEach(g => g.classList.remove("selected"));
   chatTitleText.textContent = "Chat";
   if (chatHeaderAvatar) chatHeaderAvatar.style.display = "none";
   if (typingIndicator) typingIndicator.textContent = "";
+  if (audioCallBtn) audioCallBtn.style.display = "inline-flex";
+  if (videoCallBtn) videoCallBtn.style.display = "inline-flex";
   contactsEl && contactsEl.classList.remove("hidden-mobile");
   chatAreaEl && chatAreaEl.classList.remove("visible-mobile");
 }
@@ -499,7 +694,7 @@ window.addEventListener("resize", () => {
 });
 
 // =====================================================================
-// STORICO MESSAGGI
+// P1 — STORICO MESSAGGI DA LOCALSTORAGE
 // =====================================================================
 const messagesByContact = {};
 const msgElementById = {};
@@ -579,7 +774,7 @@ function showMsgContextMenu(x, y, msgId, wrapper) {
 }
 
 function deleteMessage(msgId, wrapper) {
-  if (!msgId || !selectedContactEmail || !currentUser) return;
+  if (!msgId || !currentUser) return;
   wrapper.style.transition = "opacity 0.25s, transform 0.25s";
   wrapper.style.opacity = "0";
   wrapper.style.transform = "scale(0.95)";
@@ -587,7 +782,12 @@ function deleteMessage(msgId, wrapper) {
     if (wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
     delete msgElementById[msgId];
   }, 250);
-  socket.emit("delete-message", { toEmail: selectedContactEmail, msgId });
+  if (selectedGroupId) {
+    deleteGroupMessageFromLocal(selectedGroupId, msgId);
+  } else if (selectedContactEmail) {
+    deleteMessageFromLocal(selectedContactEmail, msgId);
+    socket.emit("delete-message", { toEmail: selectedContactEmail, msgId });
+  }
 }
 
 socket.on("message-deleted", ({ msgId }) => {
@@ -599,18 +799,91 @@ socket.on("message-deleted", ({ msgId }) => {
     el.style.transform = "scale(0.95)";
     setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); delete msgElementById[msgId]; }, 250);
   }
+  // Rimuovi da localStorage
+  if (selectedContactEmail) deleteMessageFromLocal(selectedContactEmail, msgId);
 });
 
-socket.on("chat-cleared", () => {
+socket.on("chat-cleared", ({ byEmail }) => {
   if (chatDiv) chatDiv.innerHTML = "";
-  if (selectedContactEmail) messagesByContact[selectedContactEmail] = [];
+  if (selectedContactEmail) {
+    messagesByContact[selectedContactEmail] = [];
+    clearMessagesFromLocal(selectedContactEmail);
+  }
   appendSystemMessage("Chat pulita.");
+});
+
+// =====================================================================
+// P4 — REAZIONI
+// =====================================================================
+const REACTION_EMOJIS = ["❤️", "👍", "⭐"];
+
+function showReactionPicker(wrapper, msgId, peerEmail) {
+  // Rimuovi picker esistente
+  document.querySelectorAll(".reaction-picker").forEach(p => p.remove());
+
+  const picker = document.createElement("div");
+  picker.className = "reaction-picker";
+  picker.style.cssText = "position:absolute;bottom:28px;right:0;background:linear-gradient(135deg,#0f172a,#020617);border:1px solid rgba(37,99,235,0.4);border-radius:999px;padding:4px 8px;display:flex;gap:6px;z-index:500;box-shadow:0 4px 16px rgba(0,0,0,0.6);";
+
+  REACTION_EMOJIS.forEach(emoji => {
+    const btn = document.createElement("button");
+    btn.textContent = emoji;
+    btn.style.cssText = "background:transparent;border:none;font-size:20px;cursor:pointer;padding:2px;border-radius:50%;transition:transform 0.1s;";
+    btn.addEventListener("mouseenter", () => { btn.style.transform = "scale(1.3)"; });
+    btn.addEventListener("mouseleave", () => { btn.style.transform = "scale(1)"; });
+    const doReact = (e) => {
+      if (e) e.preventDefault();
+      picker.remove();
+      addReactionToMessage(msgId, emoji, currentUser.email, wrapper);
+      if (peerEmail) {
+        socket.emit("message-reaction", { toEmail: peerEmail, msgId, emoji });
+      }
+    };
+    btn.addEventListener("click", doReact);
+    btn.addEventListener("touchend", doReact, { passive: false });
+    picker.appendChild(btn);
+  });
+
+  wrapper.style.position = "relative";
+  wrapper.appendChild(picker);
+
+  setTimeout(() => {
+    document.addEventListener("click", () => picker.remove(), { once: true });
+  }, 50);
+}
+
+function addReactionToMessage(msgId, emoji, fromEmail, wrapper) {
+  if (!wrapper) {
+    wrapper = msgElementById[msgId];
+    if (!wrapper) return;
+  }
+  // Rimuovi reazione precedente dello stesso utente
+  const existing = wrapper.querySelector(`.reaction-badge[data-from="${fromEmail}"]`);
+  if (existing) existing.remove();
+
+  const badge = document.createElement("span");
+  badge.className = "reaction-badge";
+  badge.dataset.from = fromEmail;
+  badge.dataset.msgId = msgId;
+  badge.style.cssText = "display:inline-flex;align-items:center;font-size:15px;background:rgba(37,99,235,0.15);border:1px solid rgba(37,99,235,0.3);border-radius:999px;padding:1px 6px;margin-right:4px;cursor:default;";
+  badge.textContent = emoji;
+
+  // Inserisci nella timeRow accanto al cestino
+  const timeRow = wrapper.querySelector(".msg-time");
+  if (timeRow) {
+    timeRow.insertBefore(badge, timeRow.firstChild);
+  }
+}
+
+socket.on("message-reaction", ({ msgId, emoji, fromEmail }) => {
+  if (!msgId || !emoji || !fromEmail) return;
+  addReactionToMessage(msgId, emoji, fromEmail, null);
 });
 
 // =====================================================================
 // BUILD MESSAGGIO
 // =====================================================================
-function buildMessageElement(fromUser, text, ts, isMe, msgId) {
+function buildMessageElement(fromUser, text, ts, isMe, msgId, isGroup) {
   const wrapper = document.createElement("div");
   wrapper.classList.add("msg", isMe ? "from-me" : "from-other");
   wrapper.style.position = "relative";
@@ -758,21 +1031,33 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
   timeRow.appendChild(timeSpan);
 
   const effectiveId = msgId || null;
+
+  // P4 — Pulsante reazione
+  const reactBtn = document.createElement("button");
+  reactBtn.textContent = "😊";
+  reactBtn.title = "Reagisci";
+  reactBtn.style.cssText = "display:none;background:transparent;border:none;font-size:13px;cursor:pointer;padding:0 3px;opacity:0.6;flex-shrink:0;";
+  wrapper.addEventListener("mouseenter", () => { reactBtn.style.display = "inline-block"; delBtn.style.display = "inline-block"; });
+  wrapper.addEventListener("mouseleave", () => { reactBtn.style.display = "none"; delBtn.style.display = "none"; });
+  reactBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const peerEmail = selectedGroupId ? null : selectedContactEmail;
+    if (effectiveId) showReactionPicker(wrapper, effectiveId, peerEmail);
+  });
+
   const delBtn = document.createElement("button");
   delBtn.textContent = "🗑";
   delBtn.title = "Elimina messaggio";
   delBtn.style.cssText = "display:none;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:999px;padding:0 6px;font-size:11px;cursor:pointer;color:#f87171;line-height:1.6;transition:background 0.15s;flex-shrink:0;";
 
-  wrapper.addEventListener("mouseenter", () => { delBtn.style.display = "inline-block"; });
-  wrapper.addEventListener("mouseleave", () => { delBtn.style.display = "none"; });
-
   let pressTimer = null, hideTimer = null;
   wrapper.addEventListener("touchstart", () => {
     pressTimer = setTimeout(() => {
       vibrate(40);
+      reactBtn.style.display = "inline-block";
       delBtn.style.display = "inline-block";
       if (hideTimer) clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => { delBtn.style.display = "none"; }, 3000);
+      hideTimer = setTimeout(() => { reactBtn.style.display = "none"; delBtn.style.display = "none"; }, 3000);
     }, 500);
   }, { passive: true });
   wrapper.addEventListener("touchmove",  () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } }, { passive: true });
@@ -795,29 +1080,42 @@ function buildMessageElement(fromUser, text, ts, isMe, msgId) {
     wrapper.addEventListener("contextmenu", (e) => { e.preventDefault(); showMsgContextMenu(e.clientX, e.clientY, effectiveId, wrapper); });
   }
 
+  timeRow.appendChild(reactBtn);
   timeRow.appendChild(delBtn);
   wrapper.appendChild(timeRow);
   return wrapper;
 }
 
-async function loadMessageHistory(peerEmail) {
+// P1 — Carica storico da localStorage
+function loadMessageHistory(peerEmail) {
   if (!currentUser || !peerEmail) return;
   if (chatDiv) chatDiv.innerHTML = "";
   Object.keys(msgElementById).forEach(k => delete msgElementById[k]);
-  try {
-    const res = await fetch(`/api/messages?emailA=${encodeURIComponent(currentUser.email)}&emailB=${encodeURIComponent(peerEmail)}&limit=100`);
-    const data = await res.json().catch(() => null);
-    if (!data || !data.ok) return;
-    messagesByContact[peerEmail] = [];
-    data.messages.forEach(m => {
-      const isMe = m.from === currentUser.email;
-      const fromUser = m.fromUser || { email: m.from, name: m.from };
-      const el = buildMessageElement(fromUser, m.text, m.ts, isMe, m.id);
-      messagesByContact[peerEmail].push({ el });
-      if (chatDiv) chatDiv.appendChild(el);
-    });
-    if (chatDiv) chatDiv.scrollTop = chatDiv.scrollHeight;
-  } catch(err) { console.error("Errore storico:", err); }
+  const msgs = loadMessagesFromLocal(peerEmail);
+  messagesByContact[peerEmail] = [];
+  msgs.forEach(m => {
+    const isMe = m.from === currentUser.email;
+    const fromUser = { email: m.from, name: m.fromName || m.from };
+    const el = buildMessageElement(fromUser, m.text, m.ts, isMe, m.id);
+    messagesByContact[peerEmail].push({ el });
+    if (chatDiv) chatDiv.appendChild(el);
+  });
+  if (chatDiv) chatDiv.scrollTop = chatDiv.scrollHeight;
+}
+
+// P3 — Carica storico gruppo da localStorage
+function loadGroupHistory(groupId) {
+  if (!groupId) return;
+  if (chatDiv) chatDiv.innerHTML = "";
+  Object.keys(msgElementById).forEach(k => delete msgElementById[k]);
+  const msgs = loadGroupMessagesFromLocal(groupId);
+  msgs.forEach(m => {
+    const isMe = currentUser && m.from === currentUser.email;
+    const fromUser = { email: m.from, name: m.fromName || m.from };
+    const el = buildMessageElement(fromUser, m.text, m.ts, isMe, m.id, true);
+    if (chatDiv) chatDiv.appendChild(el);
+  });
+  if (chatDiv) chatDiv.scrollTop = chatDiv.scrollHeight;
 }
 
 function addMessageToContact(email, el) {
@@ -828,10 +1126,25 @@ function addMessageToContact(email, el) {
   }
 }
 
+function addMessageToGroup(groupId, el) {
+  if (selectedGroupId === groupId && chatDiv) {
+    chatDiv.appendChild(el);
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+  }
+}
+
 // =====================================================================
 // PULISCI CHAT
 // =====================================================================
 function clearChatUI() {
+  if (selectedGroupId) {
+    if (!confirm("Vuoi eliminare tutta la cronologia di questo gruppo dal tuo dispositivo?")) return;
+    const key = getGroupLocalKey(selectedGroupId);
+    try { localStorage.removeItem(key); } catch(e) {}
+    if (chatDiv) chatDiv.innerHTML = "";
+    appendSystemMessage("✅ Cronologia gruppo eliminata.");
+    return;
+  }
   if (!selectedContactEmail || !currentUser) { appendSystemMessage("Seleziona una chat."); return; }
   const peerName = chatTitleText.textContent || selectedContactEmail;
   const ok = confirm(`Vuoi eliminare tutta la chat con ${peerName}?\n\nQuesta azione cancella i messaggi per entrambi.`);
@@ -842,6 +1155,7 @@ function clearChatUI() {
     if (data.ok) {
       if (chatDiv) chatDiv.innerHTML = "";
       messagesByContact[selectedContactEmail] = [];
+      clearMessagesFromLocal(selectedContactEmail);
       Object.keys(msgElementById).forEach(k => delete msgElementById[k]);
       appendSystemMessage("✅ Chat eliminata.");
     } else { appendSystemMessage("Errore eliminazione chat."); }
@@ -922,12 +1236,21 @@ if (profileSaveBtn) {
 // TYPING
 // =====================================================================
 function sendTypingStart() {
-  if (!currentUser || !selectedContactEmail) return;
+  if (!currentUser) return;
+  if (selectedGroupId) {
+    socket.emit("group-typing-start", { groupId: selectedGroupId });
+    return;
+  }
+  if (!selectedContactEmail) return;
   if (!isTyping) { isTyping = true; socket.emit("typing-start", { toEmail: selectedContactEmail }); }
   if (typingTimeout) clearTimeout(typingTimeout);
   typingTimeout = setTimeout(() => sendTypingStop(), 3000);
 }
 function sendTypingStop() {
+  if (selectedGroupId) {
+    socket.emit("group-typing-stop", { groupId: selectedGroupId });
+    return;
+  }
   if (!isTyping) return;
   isTyping = false;
   if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
@@ -947,6 +1270,17 @@ socket.on("typing-start", ({ from }) => {
 });
 socket.on("typing-stop", ({ from }) => {
   if (!from || selectedContactEmail !== from.email) return;
+  if (typingIndicator) typingIndicator.textContent = "";
+  if (typingHideTimeout) { clearTimeout(typingHideTimeout); typingHideTimeout = null; }
+});
+socket.on("group-typing-start", ({ from, groupId }) => {
+  if (!from || selectedGroupId !== groupId) return;
+  if (typingIndicator) typingIndicator.textContent = `${from.name} sta scrivendo...`;
+  if (typingHideTimeout) clearTimeout(typingHideTimeout);
+  typingHideTimeout = setTimeout(() => { if (typingIndicator) typingIndicator.textContent = ""; }, 5000);
+});
+socket.on("group-typing-stop", ({ from, groupId }) => {
+  if (!from || selectedGroupId !== groupId) return;
   if (typingIndicator) typingIndicator.textContent = "";
   if (typingHideTimeout) { clearTimeout(typingHideTimeout); typingHideTimeout = null; }
 });
@@ -1033,6 +1367,315 @@ conferenceBtn.addEventListener("click", () => {
 });
 
 // =====================================================================
+// P3 — GRUPPI UI
+// =====================================================================
+let myGroups = [];
+
+async function loadGroups() {
+  if (!currentUser) return;
+  try {
+    const res = await fetch(`/api/groups?email=${encodeURIComponent(currentUser.email)}`);
+    const data = await res.json();
+    if (!data.ok) return;
+    myGroups = data.groups || [];
+    renderGroupsList();
+  } catch(e) { console.error("Errore loadGroups:", e); }
+}
+
+function renderGroupsList() {
+  const groupsList = document.getElementById("groups-list");
+  if (!groupsList) return;
+  groupsList.innerHTML = "";
+  if (!myGroups.length) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "font-size:12px;color:#9ca3af;padding:8px 4px;";
+    empty.textContent = "Nessun gruppo";
+    groupsList.appendChild(empty);
+    return;
+  }
+  myGroups.forEach(group => {
+    const div = document.createElement("div");
+    div.className = "contact group-item";
+    div.dataset.groupId = group.groupId;
+    if (selectedGroupId === group.groupId) div.classList.add("selected");
+
+    const avatarEl = document.createElement("div");
+    avatarEl.className = "contact-avatar-placeholder";
+    avatarEl.style.cssText += "background:linear-gradient(135deg,#4f46e5,#6366f1);font-size:16px;";
+    avatarEl.textContent = "👥";
+
+    const infoEl = document.createElement("div");
+    infoEl.className = "contact-info";
+    const nameRow = document.createElement("div");
+    nameRow.className = "contact-name";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = group.name;
+    nameRow.appendChild(nameSpan);
+    const membersSpan = document.createElement("span");
+    membersSpan.className = "contact-email";
+    membersSpan.textContent = `${group.members.length} membri`;
+    infoEl.appendChild(nameRow);
+    infoEl.appendChild(membersSpan);
+
+    div.appendChild(avatarEl);
+    div.appendChild(infoEl);
+    div.addEventListener("click", () => openGroupChat(group));
+    groupsList.appendChild(div);
+  });
+  updateUnreadUI();
+}
+
+// Socket: ricevo messaggio gruppo
+socket.on("group-message", (msg) => {
+  if (!msg || !msg.groupId) return;
+  const isMe = currentUser && msg.from.email === currentUser.email;
+  // Salva in localStorage
+  saveGroupMessageToLocal(msg.groupId, {
+    id: msg.id,
+    from: msg.from.email,
+    fromName: msg.from.name,
+    text: msg.text,
+    ts: msg.ts
+  });
+  const el = buildMessageElement(msg.from, msg.text, msg.ts, isMe, msg.id, true);
+  addMessageToGroup(msg.groupId, el);
+  if (!isMe) {
+    playSound("message");
+    vibrate(100);
+    incrementUnreadGroup(msg.groupId);
+    showBrowserNotification("👥 " + (msg.from.name || msg.groupId), msg.text.length > 60 ? msg.text.slice(0,60)+"..." : msg.text);
+  }
+});
+
+// Socket: nuovo gruppo creato — ricarica lista
+socket.on("group-created", (data) => {
+  if (!data || !data.group) return;
+  appendSystemMessage(`👥 Sei stato aggiunto al gruppo "${data.group.name}"`);
+  loadGroups();
+});
+
+// Socket: vocali gruppo
+socket.on("group-voice", (msg) => {
+  if (!msg || !msg.groupId) return;
+  const isMe = currentUser && msg.from.email === currentUser.email;
+  const div = document.createElement("div");
+  div.classList.add("msg", isMe ? "from-me" : "from-other");
+  if (!isMe) {
+    const s = document.createElement("div"); s.className = "msg-sender";
+    s.textContent = msg.from.name; div.appendChild(s);
+  }
+  const bubble = document.createElement("div"); bubble.className = "msg-bubble";
+  bubble.style.cssText = "min-width:200px;max-width:280px;";
+  const row = document.createElement("div"); row.style.cssText = "display:flex;align-items:center;gap:8px;";
+  const playBtn = document.createElement("button");
+  playBtn.style.cssText = "width:40px;height:40px;border-radius:50%;background:#6366f1;border:none;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;";
+  playBtn.textContent = "▶";
+  const audioEl = document.createElement("audio"); audioEl.src = msg.audio; audioEl.preload = "metadata";
+  const dur = document.createElement("span"); dur.style.cssText = "font-size:11px;color:#9ca3af;"; dur.textContent = "0:00";
+  const fmtD = t => `${Math.floor(t/60)}:${Math.floor(t%60).toString().padStart(2,"0")}`;
+  audioEl.addEventListener("loadedmetadata", () => { if(isFinite(audioEl.duration)) dur.textContent=fmtD(audioEl.duration); });
+  audioEl.addEventListener("ended", () => { playBtn.textContent="▶"; });
+  const toggle = () => { unlockAudioContext(); if(audioEl.paused){playAudioSafe(audioEl);playBtn.textContent="⏸";}else{audioEl.pause();playBtn.textContent="▶";} };
+  playBtn.addEventListener("click", toggle);
+  row.appendChild(playBtn); row.appendChild(dur);
+  bubble.appendChild(row); div.appendChild(bubble);
+  addMessageToGroup(msg.groupId, div);
+  if (!isMe) { playSound("message"); vibrate(100); incrementUnreadGroup(msg.groupId); }
+});
+
+// Modal crea gruppo
+function openCreateGroupModal() {
+  const overlay = document.getElementById("create-group-overlay");
+  if (!overlay) return;
+  // Popola lista utenti
+  const userCheckList = document.getElementById("group-member-checklist");
+  if (userCheckList) {
+    userCheckList.innerHTML = "";
+    const allContacts = Array.from(document.querySelectorAll(".contact[data-email]"));
+    allContacts.forEach(c => {
+      const email = c.dataset.email;
+      if (!email || email === currentUser.email) return;
+      const nameEl = c.querySelector(".contact-name span:last-child");
+      const name = nameEl ? nameEl.textContent : email;
+      const label = document.createElement("label");
+      label.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px;color:#e5e7eb;";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = email;
+      cb.style.cssText = "accent-color:#6366f1;width:16px;height:16px;";
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(name + " (" + email + ")"));
+      userCheckList.appendChild(label);
+    });
+  }
+  overlay.classList.add("open");
+}
+
+function closeCreateGroupModal() {
+  const overlay = document.getElementById("create-group-overlay");
+  if (overlay) overlay.classList.remove("open");
+}
+
+async function createGroup() {
+  const nameEl = document.getElementById("group-name-input");
+  const name = nameEl ? nameEl.value.trim() : "";
+  if (!name) { appendSystemMessage("Inserisci un nome per il gruppo."); return; }
+  const checked = Array.from(document.querySelectorAll("#group-member-checklist input:checked")).map(cb => cb.value);
+  if (!checked.length) { appendSystemMessage("Seleziona almeno un membro."); return; }
+  try {
+    const res = await fetch("/api/groups/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, creatorEmail: currentUser.email, members: checked })
+    });
+    const data = await res.json();
+    if (!data.ok) { appendSystemMessage("Errore creazione gruppo: " + (data.error || "")); return; }
+    appendSystemMessage(`✅ Gruppo "${name}" creato!`);
+    closeCreateGroupModal();
+    if (nameEl) nameEl.value = "";
+    loadGroups();
+  } catch(e) { appendSystemMessage("Errore connessione."); }
+}
+
+// =====================================================================
+// P7 — ADMIN PANEL
+// =====================================================================
+let isAdmin = false;
+
+async function checkAdminStatus() {
+  if (!currentUser) return;
+  try {
+    const res = await fetch(`/api/admin/stats?adminEmail=${encodeURIComponent(currentUser.email)}`);
+    if (res.status === 200) {
+      const data = await res.json();
+      if (data.ok) {
+        isAdmin = true;
+        showAdminButton();
+        console.log("Admin rilevato ✅");
+      }
+    }
+  } catch(e) {}
+}
+
+function showAdminButton() {
+  if (document.getElementById("admin-panel-btn")) return;
+  const btn = document.createElement("button");
+  btn.id = "admin-panel-btn";
+  btn.textContent = "⚙️ Admin";
+  btn.style.cssText = "margin-top:8px;width:100%;padding:6px;font-size:12px;border-radius:999px;border:none;cursor:pointer;background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff;font-weight:600;";
+  btn.addEventListener("click", openAdminPanel);
+  const contactsSubheader = document.getElementById("contacts-subheader");
+  if (contactsSubheader) contactsSubheader.after(btn);
+}
+
+async function openAdminPanel() {
+  if (!isAdmin) return;
+  const overlay = document.getElementById("admin-panel-overlay");
+  if (!overlay) return;
+  // Carica stats
+  try {
+    const res = await fetch(`/api/admin/stats?adminEmail=${encodeURIComponent(currentUser.email)}`);
+    const data = await res.json();
+    if (data.ok) {
+      const statsEl = document.getElementById("admin-stats");
+      if (statsEl) statsEl.innerHTML = `
+        <div style="display:flex;gap:16px;flex-wrap:wrap;">
+          <div style="background:rgba(37,99,235,0.15);border:1px solid rgba(37,99,235,0.3);border-radius:10px;padding:10px 18px;text-align:center;">
+            <div style="font-size:22px;font-weight:700;color:#60a5fa;">${data.totalUsers}</div>
+            <div style="font-size:11px;color:#9ca3af;">Utenti totali</div>
+          </div>
+          <div style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);border-radius:10px;padding:10px 18px;text-align:center;">
+            <div style="font-size:22px;font-weight:700;color:#a5b4fc;">${data.totalGroups}</div>
+            <div style="font-size:11px;color:#9ca3af;">Gruppi totali</div>
+          </div>
+          <div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);border-radius:10px;padding:10px 18px;text-align:center;">
+            <div style="font-size:22px;font-weight:700;color:#4ade80;">${data.onlineCount}</div>
+            <div style="font-size:11px;color:#9ca3af;">Online adesso</div>
+          </div>
+        </div>
+      `;
+    }
+    // Carica lista gruppi per messaggio diretto
+    const resG = await fetch(`/api/groups/all?adminEmail=${encodeURIComponent(currentUser.email)}`);
+    const dataG = await resG.json();
+    if (dataG.ok) {
+      const groupSelect = document.getElementById("admin-group-select");
+      if (groupSelect) {
+        groupSelect.innerHTML = '<option value="">-- Seleziona gruppo --</option>';
+        dataG.groups.forEach(g => {
+          const opt = document.createElement("option");
+          opt.value = g.groupId;
+          opt.textContent = g.name + " (" + g.members.length + " membri)";
+          groupSelect.appendChild(opt);
+        });
+      }
+    }
+  } catch(e) {}
+  overlay.classList.add("open");
+}
+
+function closeAdminPanel() {
+  const overlay = document.getElementById("admin-panel-overlay");
+  if (overlay) overlay.classList.remove("open");
+}
+
+async function adminBroadcast() {
+  const textEl = document.getElementById("admin-broadcast-text");
+  const text = textEl ? textEl.value.trim() : "";
+  if (!text) { appendSystemMessage("Inserisci il testo del broadcast."); return; }
+  try {
+    const res = await fetch("/api/admin/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ adminEmail: currentUser.email, text })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      appendSystemMessage("✅ Broadcast inviato a tutti.");
+      if (textEl) textEl.value = "";
+    } else { appendSystemMessage("Errore broadcast."); }
+  } catch(e) { appendSystemMessage("Errore connessione."); }
+}
+
+async function adminMessageGroup() {
+  const groupSelect = document.getElementById("admin-group-select");
+  const textEl = document.getElementById("admin-group-text");
+  const groupId = groupSelect ? groupSelect.value : "";
+  const text = textEl ? textEl.value.trim() : "";
+  if (!groupId) { appendSystemMessage("Seleziona un gruppo."); return; }
+  if (!text) { appendSystemMessage("Inserisci il testo."); return; }
+  try {
+    const res = await fetch("/api/admin/message-group", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ adminEmail: currentUser.email, groupId, text })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      appendSystemMessage("✅ Messaggio inviato al gruppo.");
+      if (textEl) textEl.value = "";
+    } else { appendSystemMessage("Errore invio gruppo."); }
+  } catch(e) { appendSystemMessage("Errore connessione."); }
+}
+
+// Admin broadcast in arrivo
+socket.on("admin-broadcast", (msg) => {
+  if (!msg) return;
+  // Mostra come messaggio di sistema visibile
+  const div = document.createElement("div");
+  div.style.cssText = "margin:8px 16px;padding:10px 14px;background:linear-gradient(135deg,rgba(124,58,237,0.2),rgba(79,70,229,0.2));border:1px solid rgba(124,58,237,0.4);border-radius:12px;font-size:13px;color:#c4b5fd;";
+  div.innerHTML = `<strong>⚡ ZEUS Admin:</strong> ${msg.text}`;
+  if (chatDiv) { chatDiv.appendChild(div); chatDiv.scrollTop = chatDiv.scrollHeight; }
+  playSound("message");
+  showBrowserNotification("⚡ ZEUS Admin", msg.text);
+});
+
+// Admin notifica nuovo gruppo
+socket.on("admin-group-created", (data) => {
+  if (!data || !isAdmin) return;
+  appendSystemMessage(`📢 Nuovo gruppo creato: "${data.group.name}" da ${data.group.creatorEmail} (${data.group.members.length} membri)`);
+});
+
+// =====================================================================
 // MICROFONO — HOLD TO RECORD
 // =====================================================================
 const micBtn = document.createElement("button");
@@ -1095,7 +1738,8 @@ function startRecordingTimer() {
 async function startVoiceRecording() {
   if (isRecording) return;
   if (!navigator.mediaDevices?.getUserMedia) { appendSystemMessage("Microfono non supportato."); return; }
-  if (!currentUser || !selectedContactEmail) { appendSystemMessage("Seleziona un contatto prima."); return; }
+  if (!currentUser) { appendSystemMessage("Devi fare login prima."); return; }
+  if (!selectedContactEmail && !selectedGroupId) { appendSystemMessage("Seleziona un contatto o gruppo prima."); return; }
   micCancelled = false;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1127,7 +1771,8 @@ function stopVoiceRecording(cancelled) {
 }
 
 async function uploadAndSendVoice(blob, mimeType) {
-  if (!blob || !currentUser || !selectedContactEmail) return;
+  if (!blob || !currentUser) return;
+  if (!selectedContactEmail && !selectedGroupId) return;
   try {
     appendSystemMessage("Invio vocale...");
     const ext = mimeType.includes("mp4")||mimeType.includes("aac") ? ".m4a" : mimeType.includes("ogg") ? ".ogg" : ".webm";
@@ -1136,9 +1781,18 @@ async function uploadAndSendVoice(blob, mimeType) {
     const res = await fetch("/api/upload", { method:"POST", body:fd });
     const data = await res.json().catch(() => null);
     if (!data?.ok || !data.url) { appendSystemMessage("Errore upload vocale."); return; }
-    const msgText = `🎤 vocale: ${fileName} (${data.url})`;
-    socket.connected ? socket.emit("private-message", { toEmail:selectedContactEmail, text:msgText })
-                     : offlineQueue.push({ toEmail:selectedContactEmail, text:msgText });
+    if (selectedGroupId) {
+      // Vocale nel gruppo — invia come audio base64 via socket
+      const reader = new FileReader();
+      reader.onload = () => {
+        socket.emit("group-voice", { groupId: selectedGroupId, audio: reader.result });
+      };
+      reader.readAsDataURL(blob);
+    } else {
+      const msgText = `🎤 vocale: ${fileName} (${data.url})`;
+      socket.connected ? socket.emit("private-message", { toEmail:selectedContactEmail, text:msgText })
+                       : offlineQueue.push({ toEmail:selectedContactEmail, text:msgText });
+    }
   } catch(e) { appendSystemMessage("Errore invio vocale."); }
 }
 
@@ -1157,6 +1811,26 @@ window.addEventListener("DOMContentLoaded", () => {
     clearBtn.addEventListener("click", () => clearChatUI());
     hdr.appendChild(clearBtn);
   }
+
+  // Bottoni modal crea gruppo
+  const createGroupBtn = document.getElementById("create-group-btn");
+  if (createGroupBtn) createGroupBtn.addEventListener("click", openCreateGroupModal);
+  const createGroupCancelBtn = document.getElementById("create-group-cancel");
+  if (createGroupCancelBtn) createGroupCancelBtn.addEventListener("click", closeCreateGroupModal);
+  const createGroupConfirmBtn = document.getElementById("create-group-confirm");
+  if (createGroupConfirmBtn) createGroupConfirmBtn.addEventListener("click", createGroup);
+  const createGroupOverlay = document.getElementById("create-group-overlay");
+  if (createGroupOverlay) createGroupOverlay.addEventListener("click", e => { if (e.target === createGroupOverlay) closeCreateGroupModal(); });
+
+  // Bottoni admin panel
+  const adminCloseBtn = document.getElementById("admin-close-btn");
+  if (adminCloseBtn) adminCloseBtn.addEventListener("click", closeAdminPanel);
+  const adminBroadcastBtn = document.getElementById("admin-broadcast-btn");
+  if (adminBroadcastBtn) adminBroadcastBtn.addEventListener("click", adminBroadcast);
+  const adminGroupMsgBtn = document.getElementById("admin-group-msg-btn");
+  if (adminGroupMsgBtn) adminGroupMsgBtn.addEventListener("click", adminMessageGroup);
+  const adminOverlay = document.getElementById("admin-panel-overlay");
+  if (adminOverlay) adminOverlay.addEventListener("click", e => { if (e.target === adminOverlay) closeAdminPanel(); });
 
   initAudioMimeType(); initVideoMimeType(); requestNotificationPermission();
   loadTurnCredentials();
@@ -1222,7 +1896,7 @@ function stopVideoCountdown() {
 async function startVideoMessageRecording() {
   if (isVideoRecording) return;
   if (!navigator.mediaDevices?.getUserMedia) { appendSystemMessage("Camera non supportata."); return; }
-  if (!currentUser || !selectedContactEmail) { appendSystemMessage("Seleziona un contatto."); return; }
+  if (!currentUser || (!selectedContactEmail && !selectedGroupId)) { appendSystemMessage("Seleziona un contatto o gruppo."); return; }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video:{ width:{ideal:480,max:640}, height:{ideal:480,max:640}, facingMode:"user", frameRate:{ideal:15,max:30} },
@@ -1278,7 +1952,8 @@ function stopVideoMessageRecording() {
 }
 
 async function sendVideoMessage(blob, mimeType) {
-  if (!blob || !currentUser || !selectedContactEmail) return;
+  if (!blob || !currentUser) return;
+  if (!selectedContactEmail && !selectedGroupId) return;
   try {
     const isMP4 = mimeType?.includes("mp4") || mimeType?.includes("h264");
     const ext = isMP4 ? ".mp4" : ".webm";
@@ -1294,8 +1969,12 @@ async function sendVideoMessage(blob, mimeType) {
         const data = JSON.parse(xhr.responseText);
         if (!data?.ok || !data.url) { appendSystemMessage("Errore upload video."); return; }
         const msgText = `🎦 video: ${fileName} (${data.url})`;
-        socket.connected ? socket.emit("private-message", { toEmail:selectedContactEmail, text:msgText })
-                         : offlineQueue.push({ toEmail:selectedContactEmail, text:msgText });
+        if (selectedGroupId) {
+          socket.emit("group-message", { groupId: selectedGroupId, text: msgText });
+        } else {
+          socket.connected ? socket.emit("private-message", { toEmail:selectedContactEmail, text:msgText })
+                           : offlineQueue.push({ toEmail:selectedContactEmail, text:msgText });
+        }
         appendSystemMessage("✓ Video inviato.");
       } catch(e) { appendSystemMessage("Errore risposta server."); }
     };
@@ -1443,7 +2122,7 @@ socket.on("user-online",  user => { if (user?.email) onlineUsers[user.email] = t
 socket.on("user-offline", user => { if (user?.email) onlineUsers[user.email] = false; loadUsers(); });
 
 // =====================================================================
-// MESSAGGI IN ARRIVO
+// MESSAGGI IN ARRIVO — PRIVATI
 // =====================================================================
 socket.on("chat-message", msg => {
   const isMe = currentUser && msg.from.email === currentUser.email;
@@ -1457,7 +2136,17 @@ socket.on("chat-message", msg => {
 
 socket.on("private-message", msg => {
   const isMe = currentUser && msg.from.email === currentUser.email;
-  const peerEmail = isMe ? (selectedContactEmail || "") : msg.from.email;
+  const peerEmail = isMe ? (selectedContactEmail || msg.to || "") : msg.from.email;
+  // P1 — salva in localStorage
+  if (peerEmail) {
+    saveMessageToLocal(peerEmail, {
+      id: msg.id,
+      from: msg.from.email,
+      fromName: msg.from.name,
+      text: msg.text,
+      ts: msg.ts
+    });
+  }
   const el = buildMessageElement(msg.from, msg.text, msg.ts, isMe, msg.id);
   addMessageToContact(peerEmail, el);
   if (!isMe) {
@@ -1479,11 +2168,15 @@ if (sendBtn) {
   sendBtn.addEventListener("click", () => {
     const text = input.value.trim();
     if (!text || !currentUser) return;
-    if (!selectedContactEmail) { appendSystemMessage("Seleziona un contatto."); input.value = ""; return; }
+    if (!selectedContactEmail && !selectedGroupId) { appendSystemMessage("Seleziona un contatto o gruppo."); input.value = ""; return; }
     sendTypingStop();
-    socket.connected
-      ? socket.emit("private-message", { toEmail:selectedContactEmail, text })
-      : offlineQueue.push({ toEmail:selectedContactEmail, text });
+    if (selectedGroupId) {
+      socket.emit("group-message", { groupId: selectedGroupId, text });
+    } else {
+      socket.connected
+        ? socket.emit("private-message", { toEmail:selectedContactEmail, text })
+        : offlineQueue.push({ toEmail:selectedContactEmail, text });
+    }
     input.value = "";
   });
 }
@@ -1522,7 +2215,7 @@ function closeAttachMenu() { if (attachMenu) { attachMenu.remove(); attachMenu =
 
 function triggerFileUpload(accept) {
   if (!currentUser) { appendSystemMessage("Fai login prima."); return; }
-  if (!selectedContactEmail) { appendSystemMessage("Seleziona un contatto."); return; }
+  if (!selectedContactEmail && !selectedGroupId) { appendSystemMessage("Seleziona un contatto o gruppo."); return; }
   const tmp = document.createElement("input"); tmp.type = "file"; tmp.accept = accept || "*/*";
   if (!isIOS) tmp.multiple = true; tmp.style.display = "none"; document.body.appendChild(tmp);
   tmp.addEventListener("change", async () => {
@@ -1534,7 +2227,8 @@ function triggerFileUpload(accept) {
 
 async function uploadFile(file) {
   if (!file) return;
-  if (file.size > 50*1024*1024) { appendSystemMessage(`⚠️ File troppo grande: ${file.name} (max 50MB)`); return; }
+  // P5 — era 50MB, ora 2GB
+  if (file.size > 2 * 1024 * 1024 * 1024) { appendSystemMessage(`⚠️ File troppo grande: ${file.name} (max 2GB)`); return; }
   const isImage = file.type.startsWith("image/");
   showUploadProgress(`Invio ${file.name}...`);
   const xhr = new XMLHttpRequest(); xhr.open("POST", "/api/upload");
@@ -1545,8 +2239,12 @@ async function uploadFile(file) {
       const data = JSON.parse(xhr.responseText);
       if (!data?.ok || !data.url) { appendSystemMessage(`Errore upload "${file.name}".`); return; }
       const msgText = isImage ? `🖼 immagine: ${file.name} (${data.url})` : `📎 allegato: ${file.name} (${data.url})`;
-      socket.connected ? socket.emit("private-message", { toEmail:selectedContactEmail, text:msgText })
-                       : offlineQueue.push({ toEmail:selectedContactEmail, text:msgText });
+      if (selectedGroupId) {
+        socket.emit("group-message", { groupId: selectedGroupId, text: msgText });
+      } else {
+        socket.connected ? socket.emit("private-message", { toEmail:selectedContactEmail, text:msgText })
+                         : offlineQueue.push({ toEmail:selectedContactEmail, text:msgText });
+      }
     } catch(e) { appendSystemMessage("Errore risposta server."); }
   };
   xhr.onerror = () => { hideUploadProgress(); appendSystemMessage(`Errore upload "${file.name}".`); };
@@ -1783,7 +2481,7 @@ socket.on("call-reject", ({ from }) => {
 });
 
 // =====================================================================
-// VOCALI RICEZIONE
+// VOCALI RICEZIONE — PRIVATI
 // =====================================================================
 socket.on("voice-message", msg => {
   const isMe = currentUser && msg.from.email === currentUser.email;
@@ -1817,13 +2515,16 @@ socket.on("voice-message", msg => {
 // =====================================================================
 // BOOTSTRAP
 // =====================================================================
-window.initZeusApp = function(user) {
+window.initZeusApp = async function(user) {
   currentUser = user || null;
   if (!currentUser?.email) { appendSystemMessage("Utente non valido."); return; }
   saveSession(currentUser);
   showApp();
   socket.emit("set-user", currentUser);
   loadUsers();
+  loadGroups();           // P3
+  checkAdminStatus();     // P7
+  checkAppVersion();      // P6
   requestNotificationPermission();
 };
 
